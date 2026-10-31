@@ -21,11 +21,4 @@
     <DebugType>none</DebugType>
   </PropertyGroup>
 
-  <ItemGroup>
-    <EditorConfigFiles Remove="D:\Documents\Github\MonsterSyncDrive.Library.SMB\MonsterSyncDrive.Library.SMB\.editorconfig" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="D:\Documents\Github\MonsterSyncDrive.Library.SMB\MonsterSyncDrive.Library.SMB\.editorconfig" />
-  </ItemGroup>
 </Project>
