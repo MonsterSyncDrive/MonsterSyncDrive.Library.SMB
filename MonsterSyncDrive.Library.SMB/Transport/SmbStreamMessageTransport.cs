@@ -23,7 +23,7 @@
  */
 using System.Net;
 
-namespace MonsterSyncDrive.SMB.Transport;
+namespace MonsterSyncDrive.Library.SMB.Transport;
 
 /// <summary>为 Direct TCP、RFC 1002 会话及单条 QUIC 字节流提供共用的分帧实现。</summary>
 internal sealed class SmbStreamMessageTransport : ISmbMessageTransport
@@ -41,15 +41,27 @@ internal sealed class SmbStreamMessageTransport : ISmbMessageTransport
     /// <summary>以原子方式记录 IO 是否已经中止或请求了释放。</summary>
     private int disposed;
     /// <summary>获取决定此字节流分帧限制的传输方式。</summary>
-    public SmbTransportKind Kind { get; }
+    public SmbTransportKind Kind
+    {
+        get;
+    }
     /// <summary>获取此字节流是否受到 QUIC 身份认证和 TLS 加密保护。</summary>
     public bool IsSecure => Kind == SmbTransportKind.Quic;
     /// <summary>获取操作系统实际绑定的本地端点。</summary>
-    public EndPoint? LocalEndPoint { get; }
+    public EndPoint? LocalEndPoint
+    {
+        get;
+    }
     /// <summary>获取经过地址竞速或重定向后实际连接的远端端点。</summary>
-    public EndPoint? RemoteEndPoint { get; }
+    public EndPoint? RemoteEndPoint
+    {
+        get;
+    }
     /// <summary>获取配置的帧长度上限，并限制在 NetBIOS 的 17 位或普通字节流的 24 位范围内。</summary>
-    public int MaximumMessageSize { get; }
+    public int MaximumMessageSize
+    {
+        get;
+    }
 
     /// <summary>封装已经建立的会话，不启动第二个读取循环。</summary>
     /// <param name="stream">已经建立连接的传输字节流。</param>
@@ -62,8 +74,13 @@ internal sealed class SmbStreamMessageTransport : ISmbMessageTransport
     internal SmbStreamMessageTransport(Stream stream, SmbTransportKind kind, int maximum, EndPoint? local, EndPoint? remote,
         Action abortOwner, Func<ValueTask> disposeOwner)
     {
-        this.stream = stream; Kind = kind; MaximumMessageSize = Math.Min(maximum, kind == SmbTransportKind.NetBios ? 0x1FFFF : 0xFFFFFF);
-        LocalEndPoint = local; RemoteEndPoint = remote; this.abortOwner = abortOwner; this.disposeOwner = disposeOwner;
+        this.stream = stream;
+        Kind = kind;
+        MaximumMessageSize = Math.Min(maximum, kind == SmbTransportKind.NetBios ? 0x1FFFF : 0xFFFFFF);
+        LocalEndPoint = local;
+        RemoteEndPoint = remote;
+        this.abortOwner = abortOwner;
+        this.disposeOwner = disposeOwner;
     }
 
     /// <summary>在同一写入门锁内写入长度前缀和消息正文。</summary>
@@ -74,18 +91,26 @@ internal sealed class SmbStreamMessageTransport : ISmbMessageTransport
     public async ValueTask SendAsync(ReadOnlyMemory<byte> message, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        if (message.Length < 4 || message.Length > MaximumMessageSize) throw new ArgumentOutOfRangeException(nameof(message));
+        if (message.Length < 4 || message.Length > MaximumMessageSize)
+            throw new ArgumentOutOfRangeException(nameof(message));
         await writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             // NetBIOS 仅使用字节 1 的最低位作为第十七个长度位；上述大小限制
             // 保证共用的前缀布局不会设置其他保留标志。
-            var header = new byte[] { 0, (byte)(message.Length >> 16), (byte)(message.Length >> 8), (byte)message.Length };
+            byte[] header = new byte[] { 0, (byte)(message.Length >> 16), (byte)(message.Length >> 8), (byte)message.Length };
             await stream.WriteAsync(header, cancellationToken).ConfigureAwait(false);
             await stream.WriteAsync(message, cancellationToken).ConfigureAwait(false);
         }
-        catch { Abort(); throw; }
-        finally { writeGate.Release(); }
+        catch
+        {
+            Abort();
+            throw;
+        }
+        finally
+        {
+            _ = writeGate.Release();
+        }
     }
 
     /// <summary>读取有大小上限的完整帧，并消费传输层保活消息。</summary>
@@ -98,30 +123,39 @@ internal sealed class SmbStreamMessageTransport : ISmbMessageTransport
         await readGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var header = new byte[4];
+            byte[] header = new byte[4];
             while (true)
             {
                 await stream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
-                var length = (header[1] << 16) | (header[2] << 8) | header[3];
-                if (header[0] == 0x85 && length == 0 && Kind != SmbTransportKind.Quic) continue;
+                int length = (header[1] << 16) | (header[2] << 8) | header[3];
+                if (header[0] == 0x85 && length == 0 && Kind != SmbTransportKind.Quic)
+                    continue;
                 // 压缩 SMB 消息可能小于未压缩消息的 64 字节协议头；
                 // 此层仅检查分帧。连接层会先解码变换格式，
                 // 再验证完整 SMB2 协议头及其签名。
                 if (header[0] != 0 || length < 4 || length > MaximumMessageSize || (Kind == SmbTransportKind.NetBios && (header[1] & 0xFE) != 0))
                     throw new SmbProtocolException("Invalid SMB transport message header or length.");
-                var message = new byte[length];
+                byte[] message = new byte[length];
                 await stream.ReadExactlyAsync(message, cancellationToken).ConfigureAwait(false);
                 return message;
             }
         }
-        catch { Abort(); throw; }
-        finally { readGate.Release(); }
+        catch
+        {
+            Abort();
+            throw;
+        }
+        finally
+        {
+            _ = readGate.Release();
+        }
     }
 
     /// <summary>仅中断当前 IO 一次，并保留门锁供尚未结束的调用清理状态。</summary>
     public void Abort()
     {
-        if (Interlocked.Exchange(ref disposed, 1) == 0) abortOwner();
+        if (Interlocked.Exchange(ref disposed, 1) == 0)
+            abortOwner();
     }
 
     /// <summary>中断挂起的 IO，并异步释放全部所属传输资源。</summary>

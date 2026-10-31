@@ -21,7 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB;
+
+using MonsterSyncDrive.Library.SMB.Protocol;
+
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>提供会话当前通道的实际 SMB 压缩统计。</summary>
 public sealed partial class SmbClient
@@ -37,16 +40,21 @@ public sealed partial class SmbClient
         get
         {
             long sent = 0, received = 0, originalSent = 0, compressedSent = 0, originalReceived = 0, compressedReceived = 0;
-            var sentAlgorithms = new HashSet<SmbCompressionAlgorithm>();
-            var receivedAlgorithms = new HashSet<SmbCompressionAlgorithm>();
-            foreach (var connection in SnapshotConnections())
+            HashSet<SmbCompressionAlgorithm> sentAlgorithms = [];
+            HashSet<SmbCompressionAlgorithm> receivedAlgorithms = [];
+            foreach (SmbConnection connection in SnapshotConnections())
             {
-                if (connection.Compression is not { } compression) continue;
-                var current = compression.Statistics;
-                sent += current.CompressedMessagesSent; received += current.CompressedMessagesReceived;
-                originalSent += current.OriginalBytesSent; compressedSent += current.CompressedBytesSent;
-                originalReceived += current.OriginalBytesReceived; compressedReceived += current.CompressedBytesReceived;
-                sentAlgorithms.UnionWith(current.SentAlgorithms); receivedAlgorithms.UnionWith(current.ReceivedAlgorithms);
+                if (connection.Compression is not { } compression)
+                    continue;
+                SmbCompressionStatistics current = compression.Statistics;
+                sent += current.CompressedMessagesSent;
+                received += current.CompressedMessagesReceived;
+                originalSent += current.OriginalBytesSent;
+                compressedSent += current.CompressedBytesSent;
+                originalReceived += current.OriginalBytesReceived;
+                compressedReceived += current.CompressedBytesReceived;
+                sentAlgorithms.UnionWith(current.SentAlgorithms);
+                receivedAlgorithms.UnionWith(current.ReceivedAlgorithms);
             }
             return new(sent, received, originalSent, compressedSent, originalReceived, compressedReceived,
                 Array.AsReadOnly(sentAlgorithms.Order().ToArray()), Array.AsReadOnly(receivedAlgorithms.Order().ToArray()));

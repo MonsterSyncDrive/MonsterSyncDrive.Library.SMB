@@ -21,9 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-using MonsterSyncDrive.SMB.Protocol;
+using MonsterSyncDrive.Library.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 
 /// <summary>SMB2 打开句柄的两个 64 位标识；名称 Persistent 是协议字段名，不代表已实现 persistent handle 恢复。</summary>
@@ -36,7 +36,10 @@ public readonly record struct SmbFileId(ulong Persistent, ulong Volatile)
     /// <param name="packet">含 SMB 句柄的协议数据。</param>
     /// <param name="offset">16 字节句柄的起始偏移。</param>
     /// <returns>原始 SMB 句柄标识。</returns>
-    internal static SmbFileId Read(ReadOnlySpan<byte> packet, int offset) => new(Wire.U64(packet, offset), Wire.U64(packet, offset + 8));
+    internal static SmbFileId Read(ReadOnlySpan<byte> packet, int offset)
+    {
+        return new(Wire.U64(packet, offset), Wire.U64(packet, offset + 8));
+    }
 
     /// <summary>把句柄标识写入请求中连续的 16 字节区域。</summary>
     /// <param name="packet">可写请求缓冲区。</param>
@@ -52,26 +55,38 @@ public readonly record struct SmbFileId(ulong Persistent, ulong Volatile)
 public sealed partial class SmbFileHandle : IAsyncDisposable
 {
 
-    /// <summary>拥有此句柄的共享对象，负责树标识、请求路由和关闭后的句柄注销。</summary>
-    private readonly SmbShare share;
-
     /// <summary>通过 Interlocked 维护的关闭标志；零为打开，非零为已开始关闭。</summary>
     private int closed;
 
     /// <summary>本次远程打开的 SMB 文件句柄标识，不用于重新按文件系统 ID 打开。</summary>
-    public SmbFileId Id { get; }
+    public SmbFileId Id
+    {
+        get;
+    }
 
     /// <summary>创建此句柄时的共享相对路径；成功重命名后更新为目标路径。</summary>
-    public string Path { get; private set; }
+    public string Path
+    {
+        get; private set;
+    }
 
     /// <summary>本次打开的访问掩码、共享模式、处置方式及文件选项快照。</summary>
-    public SmbOpenOptions OpenOptions { get; }
+    public SmbOpenOptions OpenOptions
+    {
+        get;
+    }
 
     /// <summary>CREATE 响应中的文件长度快照；外部写入后不会自动更新。</summary>
-    public long InitialLength { get; }
+    public long InitialLength
+    {
+        get;
+    }
 
     /// <summary>CREATE 响应中的属性快照；查询最新属性应调用 GetInfoAsync。</summary>
-    public FileAttributes Attributes { get; }
+    public FileAttributes Attributes
+    {
+        get;
+    }
 
     /// <summary>打开时的属性是否含 Directory 标志。</summary>
     public bool IsDirectory => (Attributes & FileAttributes.Directory) != 0;
@@ -80,22 +95,25 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     public bool IsClosed => Volatile.Read(ref closed) != 0;
 
     /// <summary>供库内功能使用的所属共享对象。</summary>
-    internal SmbShare Share => share;
+    internal SmbShare Share
+    {
+        get;
+    }
     // 单 credit 数据块确保只授予一个 credit 的服务器也能持续处理请求。
 
     /// <summary>普通文件单次读取预算，取服务器限制、传输缓冲设置和 65536 的最小值，以便单 credit 也能推进。</summary>
-    internal int ReadSize => Math.Min(65536, Math.Min(share.Client.ConnectionInfo.MaxReadSize, share.Client.Options.TransferBufferSize));
+    internal int ReadSize => Math.Min(65536, Math.Min(Share.Client.ConnectionInfo.MaxReadSize, Share.Client.Options.TransferBufferSize));
 
     /// <summary>普通文件单次写入预算，取服务器限制、传输缓冲设置和 65536 的最小值。</summary>
-    internal int WriteSize => Math.Min(65536, Math.Min(share.Client.ConnectionInfo.MaxWriteSize, share.Client.Options.TransferBufferSize));
+    internal int WriteSize => Math.Min(65536, Math.Min(Share.Client.ConnectionInfo.MaxWriteSize, Share.Client.Options.TransferBufferSize));
 
     /// <summary>控制和默认分页操作的单 credit 输出预算，最多 65536 字节。</summary>
-    private int TransactionSize => Math.Min(65536, share.Client.ConnectionInfo.MaxTransactionSize);
+    private int TransactionSize => Math.Min(65536, Share.Client.ConnectionInfo.MaxTransactionSize);
 
     /// <summary>显式大型信息请求的容量上界，受服务端事务限制、传输消息预算和客户端包大小限制共同约束。</summary>
-    private int MaximumTransactionCapacity => Math.Min(share.Client.SupportsMultiCredit ?
-        share.Client.ConnectionInfo.MaxTransactionSize : 65536, Math.Min(share.Client.Options.MaximumPacketSize,
-            share.Client.MaximumTransportMessageSize) - 256);
+    private int MaximumTransactionCapacity => Math.Min(Share.Client.SupportsMultiCredit ?
+        Share.Client.ConnectionInfo.MaxTransactionSize : 65536, Math.Min(Share.Client.Options.MaximumPacketSize,
+            Share.Client.MaximumTransportMessageSize) - 256);
 
 
     /// <summary>从成功的 CREATE 响应建立句柄，保存标识、属性和初始长度，并拒绝无效负长度。</summary>
@@ -106,7 +124,10 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <param name="createResponse">包含固定 CREATE 响应字段的完整 SMB 消息。</param>
     internal SmbFileHandle(SmbShare share, SmbFileId id, string path, SmbOpenOptions options, byte[] createResponse)
     {
-        this.share = share; Id = id; Path = path; OpenOptions = options;
+        Share = share;
+        Id = id;
+        Path = path;
+        OpenOptions = options;
         InitialLength = Wire.I64(createResponse, 112);
         if (InitialLength < 0)
             throw new SmbProtocolException("The server returned a negative file size.");
@@ -129,31 +150,32 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         if (buffer.Length == 0)
             return 0;
-        var count = Math.Min(buffer.Length, ReadSize);
+        int count = Math.Min(buffer.Length, ReadSize);
         await ValidateUnbufferedIoAsync(offset, count, cancellationToken).ConfigureAwait(false);
         if (offset > long.MaxValue - count)
             throw new ArgumentOutOfRangeException(nameof(offset));
-        if (TrySelectRdmaIo(count, false, out var rdmaConnection, out var rdma))
+        if (TrySelectRdmaIo(count, false, out SmbConnection? rdmaConnection, out SmbDirectConnection? rdma))
             return await ReadRdmaAsync(buffer[..count], offset, rdmaConnection, rdma, cancellationToken).ConfigureAwait(false);
-        var body = new byte[49];
+        byte[] body = new byte[49];
         Wire.Put16(body, 0, 49);
         // 磁盘文件声明压缩响应意图；发送通道会依据其实际协商结果和传输类型再次过滤。
-        if (share.IsDiskShare && share.Client.Options.Compression.Enabled) body[3] |= 0x02;
+        if (Share.IsDiskShare && Share.Client.Options.Compression.Enabled)
+            body[3] |= 0x02;
         Wire.Put32(body, 4, (uint)count);
         Wire.PutI64(body, 8, offset);
         Id.Write(body, 16);
-        var response = await share.SendAsync(Command.Read, body, cancellationToken, count).ConfigureAwait(false);
+        Response response = await Share.SendAsync(Command.Read, body, cancellationToken, count).ConfigureAwait(false);
         response.EnsureSuccess(SmbStatus.EndOfFile, SmbStatus.BufferOverflow);
         if (response.Status == SmbStatus.EndOfFile)
             return 0;
         Wire.Structure(response.Packet, 17, 16);
-        var length = Wire.U32(response.Packet, 68);
+        uint length = Wire.U32(response.Packet, 68);
         if (length > count)
             throw new SmbProtocolException("The server returned more file data than requested.");
-        var data = Wire.Buffer(response.Packet, response.Packet[66], length, 80);
-        await share.Client.QosState.LimitDownloadAsync(data.Length, cancellationToken).ConfigureAwait(false);
+        byte[] data = Wire.Buffer(response.Packet, response.Packet[66], length, 80);
+        await Share.Client.QosState.LimitDownloadAsync(data.Length, cancellationToken).ConfigureAwait(false);
         data.CopyTo(buffer);
-        share.Client.QosState.Downloaded(data.Length);
+        Share.Client.QosState.Downloaded(data.Length);
         return data.Length;
     }
 
@@ -174,13 +196,13 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         if (buffer.Length == 0)
             return 0;
-        var count = Math.Min(buffer.Length, WriteSize);
+        int count = Math.Min(buffer.Length, WriteSize);
         await ValidateUnbufferedIoAsync(offset, count, cancellationToken).ConfigureAwait(false);
         if (offset > long.MaxValue - count)
             throw new ArgumentOutOfRangeException(nameof(offset));
-        if (TrySelectRdmaIo(count, true, out var rdmaConnection, out var rdma))
+        if (TrySelectRdmaIo(count, true, out SmbConnection? rdmaConnection, out SmbDirectConnection? rdma))
             return await WriteRdmaAsync(buffer[..count], offset, writeThrough, rdmaConnection, rdma, cancellationToken).ConfigureAwait(false);
-        var body = new byte[48 + count];
+        byte[] body = new byte[48 + count];
         Wire.Put16(body, 0, 49);
         Wire.Put16(body, 2, 112);
         Wire.Put32(body, 4, (uint)count);
@@ -188,14 +210,14 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         Id.Write(body, 16);
         Wire.Put32(body, 44, writeThrough ? 1u : 0);
         buffer.Span[..count].CopyTo(body.AsSpan(48));
-        await share.Client.QosState.LimitUploadAsync(count, cancellationToken).ConfigureAwait(false);
-        var response = await share.SendAsync(Command.Write, body, cancellationToken).ConfigureAwait(false);
+        await Share.Client.QosState.LimitUploadAsync(count, cancellationToken).ConfigureAwait(false);
+        Response response = await Share.SendAsync(Command.Write, body, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccess();
         Wire.Structure(response.Packet, 17, 16);
-        var written = Wire.U32(response.Packet, 68);
+        uint written = Wire.U32(response.Packet, 68);
         if (written == 0 || written > count)
             throw new SmbProtocolException("The server returned an invalid write count.");
-        share.Client.QosState.Uploaded((int)written);
+        Share.Client.QosState.Uploaded((int)written);
         return (int)written;
     }
 
@@ -215,7 +237,7 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         if (offset > long.MaxValue - buffer.Length)
             throw new ArgumentOutOfRangeException(nameof(offset));
         await ValidateUnbufferedIoAsync(offset, buffer.Length, cancellationToken).ConfigureAwait(false);
-        var written = 0;
+        int written = 0;
         while (written < buffer.Length)
             written += await WriteAsync(buffer[written..], offset + written, writeThrough, cancellationToken).ConfigureAwait(false);
     }
@@ -227,8 +249,8 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     public async Task FlushAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfClosed();
-        var body = FileIdBody(24, 24, 8);
-        var response = await share.SendAsync(Command.Flush, body, cancellationToken).ConfigureAwait(false);
+        byte[] body = FileIdBody(24, 24, 8);
+        Response response = await Share.SendAsync(Command.Flush, body, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccess();
         Wire.Structure(response.Packet, 4, 4);
     }
@@ -244,8 +266,10 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <returns>验证响应结构和容量后的原始信息数据。</returns>
     public async Task<byte[]> QueryInfoAsync(SmbInfoType type, byte informationClass, int maximumOutput = 65536,
         uint additionalInformation = 0, ReadOnlyMemory<byte> input = default, uint flags = 0, CancellationToken cancellationToken = default)
-        => (await QueryInfoCoreAsync(type, informationClass, maximumOutput, additionalInformation, input, flags,
-            cancellationToken).ConfigureAwait(false)).Data;
+    {
+        return (await QueryInfoCoreAsync(type, informationClass, maximumOutput, additionalInformation, input, flags,
+                cancellationToken).ConfigureAwait(false)).Data;
+    }
 
 
     /// <summary>构造有界的 QUERY_INFO 并保留允许的终止或溢出状态，供原始查询和 EA 分页共享。</summary>
@@ -268,9 +292,10 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(type));
         if (maximumOutput < 1 || maximumOutput > MaximumTransactionCapacity || input.Length > MaximumTransactionCapacity)
             throw new ArgumentOutOfRangeException(nameof(maximumOutput));
-        var body = new byte[40 + Math.Max(1, input.Length)];
+        byte[] body = new byte[40 + Math.Max(1, input.Length)];
         Wire.Put16(body, 0, 41);
-        body[2] = (byte)type; body[3] = informationClass;
+        body[2] = (byte)type;
+        body[3] = informationClass;
         Wire.Put32(body, 4, (uint)maximumOutput);
         if (input.Length > 0)
             Wire.Put16(body, 8, 104);
@@ -279,15 +304,15 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         Wire.Put32(body, 20, flags);
         Id.Write(body, 24);
         input.Span.CopyTo(body.AsSpan(40));
-        var response = await share.SendAsync(Command.QueryInfo, body, cancellationToken, maximumOutput).ConfigureAwait(false);
+        Response response = await Share.SendAsync(Command.QueryInfo, body, cancellationToken, maximumOutput).ConfigureAwait(false);
         response.EnsureSuccess(accepted);
         if (response.Status is not (SmbStatus.Success or SmbStatus.BufferOverflow))
             return ([], response.Status);
         Wire.Structure(response.Packet, 9, 8);
-        var length = Wire.U32(response.Packet, 68);
-        if (length > maximumOutput)
-            throw new SmbProtocolException("An information response exceeded its requested buffer.");
-        return (Wire.Buffer(response.Packet, Wire.U16(response.Packet, 66), length, 72), response.Status);
+        uint length = Wire.U32(response.Packet, 68);
+        return length > maximumOutput
+            ? throw new SmbProtocolException("An information response exceeded its requested buffer.")
+            : ((byte[] Data, SmbStatus Status))(Wire.Buffer(response.Packet, Wire.U16(response.Packet, 66), length, 72), response.Status);
     }
 
 
@@ -304,15 +329,16 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         ThrowIfClosed();
         if (!Enum.IsDefined(type) || data.Length > MaximumTransactionCapacity)
             throw new ArgumentException("Invalid information type or buffer.");
-        var body = new byte[32 + Math.Max(1, data.Length)];
+        byte[] body = new byte[32 + Math.Max(1, data.Length)];
         Wire.Put16(body, 0, 33);
-        body[2] = (byte)type; body[3] = informationClass;
+        body[2] = (byte)type;
+        body[3] = informationClass;
         Wire.Put32(body, 4, (uint)data.Length);
         Wire.Put16(body, 8, 96);
         Wire.Put32(body, 12, additionalInformation);
         Id.Write(body, 16);
         data.Span.CopyTo(body.AsSpan(32));
-        var response = await share.SendAsync(Command.SetInfo, body, cancellationToken).ConfigureAwait(false);
+        Response response = await Share.SendAsync(Command.SetInfo, body, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccess();
         Wire.Structure(response.Packet, 2, 2);
     }
@@ -323,11 +349,11 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <returns>当前服务器报告的文件信息。</returns>
     public async Task<SmbFileInfo> GetInfoAsync(CancellationToken cancellationToken = default)
     {
-        var data = await QueryInfoAsync(SmbInfoType.File, 18, cancellationToken: cancellationToken).ConfigureAwait(false);
-        Wire.Slice(data, 0, 100);
-        if (Wire.I64(data, 40) < 0 || Wire.I64(data, 48) < 0)
-            throw new SmbProtocolException("Invalid remote file size.");
-        return new SmbFileInfo(Wire.Time(data, 0), Wire.Time(data, 8), Wire.Time(data, 16), Wire.Time(data, 24),
+        byte[] data = await QueryInfoAsync(SmbInfoType.File, 18, cancellationToken: cancellationToken).ConfigureAwait(false);
+        _ = Wire.Slice(data, 0, 100);
+        return Wire.I64(data, 40) < 0 || Wire.I64(data, 48) < 0
+            ? throw new SmbProtocolException("Invalid remote file size.")
+            : new SmbFileInfo(Wire.Time(data, 0), Wire.Time(data, 8), Wire.Time(data, 16), Wire.Time(data, 24),
             Wire.I64(data, 40), Wire.I64(data, 48), (FileAttributes)Wire.U32(data, 32), Wire.U32(data, 56),
             data[60] != 0, data[61] != 0, Wire.U64(data, 64),
             Wire.Text(data, 100, Wire.Int32(Wire.U32(data, 96))));
@@ -341,7 +367,7 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     public Task SetLengthAsync(long length, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(length);
-        var data = new byte[8];
+        byte[] data = new byte[8];
         Wire.PutI64(data, 0, length);
         return SetInfoAsync(SmbInfoType.File, 20, data, cancellationToken: cancellationToken);
     }
@@ -354,7 +380,7 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     public Task SetAllocationSizeAsync(long length, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(length);
-        var data = new byte[8];
+        byte[] data = new byte[8];
         Wire.PutI64(data, 0, length);
         return SetInfoAsync(SmbInfoType.File, 19, data, cancellationToken: cancellationToken);
     }
@@ -372,7 +398,7 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         DateTimeOffset? lastAccessTime = null, DateTimeOffset? lastWriteTime = null,
         DateTimeOffset? changeTime = null, CancellationToken cancellationToken = default)
     {
-        var data = new byte[40];
+        byte[] data = new byte[40];
         Wire.PutI64(data, 0, creationTime?.ToFileTime() ?? 0);
         Wire.PutI64(data, 8, lastAccessTime?.ToFileTime() ?? 0);
         Wire.PutI64(data, 16, lastWriteTime?.ToFileTime() ?? 0);
@@ -387,7 +413,9 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>服务器确认设置后的任务。</returns>
     public Task SetDeletePendingAsync(bool delete, CancellationToken cancellationToken = default)
-        => SetInfoAsync(SmbInfoType.File, 13, new byte[] { delete ? (byte)1 : (byte)0 }, cancellationToken: cancellationToken);
+    {
+        return SetInfoAsync(SmbInfoType.File, 13, new byte[] { delete ? (byte)1 : (byte)0 }, cancellationToken: cancellationToken);
+    }
 
 
     /// <summary>使用普通重命名信息类在同一共享内更改名称；只有服务端成功后才更新 Path。</summary>
@@ -408,7 +436,9 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>服务器确认硬链接创建后的任务。</returns>
     public Task CreateHardLinkAsync(string destination, bool replaceIfExists = false, CancellationToken cancellationToken = default)
-        => SetNameAsync(11, destination, replaceIfExists, cancellationToken);
+    {
+        return SetNameAsync(11, destination, replaceIfExists, cancellationToken);
+    }
 
 
     /// <summary>构造共享相对的重命名或链接结构；网络 RootDirectory 固定为零。</summary>
@@ -419,10 +449,10 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <returns>相应 SET_INFO 完成后的任务。</returns>
     private Task SetNameAsync(byte informationClass, string destination, bool replaceIfExists, CancellationToken cancellationToken)
     {
-        var name = Wire.Unicode.GetBytes(SmbPath.Normalize(destination));
+        byte[] name = Wire.Unicode.GetBytes(SmbPath.Normalize(destination));
         if (name.Length == 0)
             throw new ArgumentException("A destination filename is required.", nameof(destination));
-        var data = new byte[20 + name.Length];
+        byte[] data = new byte[20 + name.Length];
         data[0] = replaceIfExists ? (byte)1 : (byte)0;
         Wire.Put32(data, 16, (uint)name.Length);
         name.CopyTo(data, 20);
@@ -436,7 +466,9 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <returns>原始安全描述符字节；服务端检查句柄权限和相应特权。</returns>
     public Task<byte[]> GetSecurityDescriptorAsync(SmbSecurityInformation information = SmbSecurityInformation.Owner |
         SmbSecurityInformation.Group | SmbSecurityInformation.Dacl, CancellationToken cancellationToken = default)
-        => QueryInfoAsync(SmbInfoType.Security, 0, additionalInformation: (uint)information, cancellationToken: cancellationToken);
+    {
+        return QueryInfoAsync(SmbInfoType.Security, 0, additionalInformation: (uint)information, cancellationToken: cancellationToken);
+    }
 
     /// <summary>设置自相对安全描述符，无需依赖仅限 Windows 的 ACL 类型。</summary>
     /// <param name="descriptor">至少 20 字节、版本为 1 且设置 SELF_RELATIVE 的描述符。</param>
@@ -446,9 +478,9 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     public Task SetSecurityDescriptorAsync(ReadOnlyMemory<byte> descriptor, SmbSecurityInformation information,
         CancellationToken cancellationToken = default)
     {
-        if (descriptor.Length < 20 || descriptor.Span[0] != 1 || (Wire.U16(descriptor.Span, 2) & 0x8000) == 0)
-            throw new ArgumentException("A revision 1, self-relative security descriptor is required.", nameof(descriptor));
-        return SetInfoAsync(SmbInfoType.Security, 0, descriptor, (uint)information, cancellationToken);
+        return descriptor.Length < 20 || descriptor.Span[0] != 1 || (Wire.U16(descriptor.Span, 2) & 0x8000) == 0
+            ? throw new ArgumentException("A revision 1, self-relative security descriptor is required.", nameof(descriptor))
+            : SetInfoAsync(SmbInfoType.Security, 0, descriptor, (uint)information, cancellationToken);
     }
 
 
@@ -460,8 +492,8 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     internal async Task<IReadOnlyList<SmbDirectoryEntry>?> QueryDirectoryAsync(string pattern, bool restart, CancellationToken cancellationToken)
     {
         ThrowIfClosed();
-        var name = Wire.Unicode.GetBytes(pattern);
-        var body = new byte[32 + name.Length];
+        byte[] name = Wire.Unicode.GetBytes(pattern);
+        byte[] body = new byte[32 + name.Length];
         Wire.Put16(body, 0, 33);
         body[2] = 1; // 使用 MS-FSCC 2.4.10 定义的 FileDirectoryInformation 基本目录格式。
         body[3] = restart ? (byte)1 : (byte)0;
@@ -470,15 +502,15 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         Wire.Put16(body, 26, checked((ushort)name.Length));
         Wire.Put32(body, 28, (uint)TransactionSize);
         name.CopyTo(body, 32);
-        var response = await share.SendAsync(Command.QueryDirectory, body, cancellationToken, TransactionSize).ConfigureAwait(false);
+        Response response = await Share.SendAsync(Command.QueryDirectory, body, cancellationToken, TransactionSize).ConfigureAwait(false);
         response.EnsureSuccess(SmbStatus.NoMoreFiles, SmbStatus.NoSuchFile, SmbStatus.BufferOverflow);
         if (response.Status is SmbStatus.NoMoreFiles or SmbStatus.NoSuchFile)
             return null;
         Wire.Structure(response.Packet, 9, 8);
-        var length = Wire.U32(response.Packet, 68);
-        if (length > TransactionSize)
-            throw new SmbProtocolException("Oversized SMB directory response.");
-        return ParseDirectory(Wire.Buffer(response.Packet, Wire.U16(response.Packet, 66), length, 72));
+        uint length = Wire.U32(response.Packet, 68);
+        return length > TransactionSize
+            ? throw new SmbProtocolException("Oversized SMB directory response.")
+            : ParseDirectory(Wire.Buffer(response.Packet, Wire.U16(response.Packet, 66), length, 72));
     }
 
 
@@ -488,16 +520,16 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     internal static IReadOnlyList<SmbDirectoryEntry> ParseDirectory(ReadOnlySpan<byte> data)
     {
         var entries = new List<SmbDirectoryEntry>();
-        var offset = 0;
+        int offset = 0;
         while (offset < data.Length)
         {
-            var entry = data[offset..];
-            Wire.Slice(entry, 0, 64);
-            var next = Wire.U32(entry, 0);
-            var length = Wire.U32(entry, 60);
+            ReadOnlySpan<byte> entry = data[offset..];
+            _ = Wire.Slice(entry, 0, 64);
+            uint next = Wire.U32(entry, 0);
+            uint length = Wire.U32(entry, 60);
             if (length > int.MaxValue || (next != 0 && (next % 8 != 0 || next < 64 + length || next >= entry.Length)))
                 throw new SmbProtocolException("Invalid SMB directory entry chain.");
-            var name = Wire.Text(entry, 64, (int)length);
+            string name = Wire.Text(entry, 64, (int)length);
             if (name.Length == 0 || name.IndexOfAny(['\\', '/', '\0', ':']) >= 0 ||
                 Wire.I64(entry, 40) < 0 || Wire.I64(entry, 48) < 0)
                 throw new SmbProtocolException("Invalid SMB directory entry name or size.");
@@ -523,22 +555,22 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(ranges);
         if (ranges.Count is < 1 or > 2048)
             throw new ArgumentOutOfRangeException(nameof(ranges));
-        var body = new byte[24 + ranges.Count * 24];
+        byte[] body = new byte[24 + (ranges.Count * 24)];
         Wire.Put16(body, 0, 48);
         Wire.Put16(body, 2, (ushort)ranges.Count);
         Id.Write(body, 8);
-        for (var i = 0; i < ranges.Count; i++)
+        for (int i = 0; i < ranges.Count; i++)
         {
-            var range = ranges[i];
-            var kind = range.Flags & ~SmbLockFlags.FailImmediately;
+            SmbLockRange range = ranges[i];
+            SmbLockFlags kind = range.Flags & ~SmbLockFlags.FailImmediately;
             if (range.Offset < 0 || range.Length <= 0 || range.Offset > long.MaxValue - range.Length ||
                 kind is not (SmbLockFlags.Shared or SmbLockFlags.Exclusive or SmbLockFlags.Unlock))
                 throw new ArgumentException("Invalid SMB lock range.", nameof(ranges));
-            Wire.PutI64(body, 24 + i * 24, range.Offset);
-            Wire.PutI64(body, 32 + i * 24, range.Length);
-            Wire.Put32(body, 40 + i * 24, (uint)range.Flags);
+            Wire.PutI64(body, 24 + (i * 24), range.Offset);
+            Wire.PutI64(body, 32 + (i * 24), range.Length);
+            Wire.Put32(body, 40 + (i * 24), (uint)range.Flags);
         }
-        var response = await share.SendAsync(Command.Lock, body, cancellationToken,
+        Response response = await Share.SendAsync(Command.Lock, body, cancellationToken,
             infiniteTimeout: ranges.Any(range => (range.Flags & (SmbLockFlags.FailImmediately | SmbLockFlags.Unlock)) == 0)).ConfigureAwait(false);
         response.EnsureSuccess();
         Wire.Structure(response.Packet, 4, 4);
@@ -556,19 +588,19 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         ThrowIfClosed();
         if (filter == 0 || (filter & ~SmbNotifyFilter.All) != 0)
             throw new ArgumentOutOfRangeException(nameof(filter));
-        var body = FileIdBody(32, 32, 8);
+        byte[] body = FileIdBody(32, 32, 8);
         Wire.Put16(body, 2, watchSubtree ? (ushort)1 : (ushort)0);
         Wire.Put32(body, 4, (uint)TransactionSize);
         Wire.Put32(body, 24, (uint)filter);
-        var response = await share.SendAsync(Command.ChangeNotify, body, cancellationToken, TransactionSize, true).ConfigureAwait(false);
+        Response response = await Share.SendAsync(Command.ChangeNotify, body, cancellationToken, TransactionSize, true).ConfigureAwait(false);
         response.EnsureSuccess(SmbStatus.NotifyEnumDir, SmbStatus.BufferOverflow);
         if (response.Status == SmbStatus.NotifyEnumDir)
             return new SmbChangeBatch([], true);
         Wire.Structure(response.Packet, 9, 8);
-        var length = Wire.U32(response.Packet, 68);
+        uint length = Wire.U32(response.Packet, 68);
         if (length > TransactionSize)
             throw new SmbProtocolException("Oversized SMB notification response.");
-        var data = Wire.Buffer(response.Packet, Wire.U16(response.Packet, 66), length, 72);
+        byte[] data = Wire.Buffer(response.Packet, Wire.U16(response.Packet, 66), length, 72);
         return new SmbChangeBatch(ParseNotifications(data), response.Status == SmbStatus.BufferOverflow);
     }
 
@@ -579,21 +611,27 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     internal static IReadOnlyList<SmbChangeNotification> ParseNotifications(ReadOnlySpan<byte> data)
     {
         var changes = new List<SmbChangeNotification>();
-        var offset = 0;
+        int offset = 0;
         while (offset < data.Length)
         {
-            var entry = data[offset..];
-            Wire.Slice(entry, 0, 12);
-            var next = Wire.U32(entry, 0);
-            var length = Wire.U32(entry, 8);
+            ReadOnlySpan<byte> entry = data[offset..];
+            _ = Wire.Slice(entry, 0, 12);
+            uint next = Wire.U32(entry, 0);
+            uint length = Wire.U32(entry, 8);
             if (length > int.MaxValue || (next != 0 && (next % 4 != 0 || next < 12 + length || next >= entry.Length)))
                 throw new SmbProtocolException("Invalid SMB change notification chain.");
             var action = (SmbChangeAction)Wire.U32(entry, 4);
             if (!Enum.IsDefined(action))
                 throw new SmbProtocolException("Invalid SMB change notification action.");
-            var name = Wire.Text(entry, 12, (int)length);
-            try { SmbPath.Normalize(name); }
-            catch (ArgumentException ex) { throw new SmbProtocolException("Invalid SMB notification path.", ex); }
+            string name = Wire.Text(entry, 12, (int)length);
+            try
+            {
+                _ = SmbPath.Normalize(name);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new SmbProtocolException("Invalid SMB notification path.", ex);
+            }
             changes.Add(new SmbChangeNotification(action, name));
             if (next == 0)
                 break;
@@ -611,7 +649,9 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <returns>与控制码及当前 FileId 匹配的输出数据。</returns>
     public async Task<byte[]> IoControlAsync(uint controlCode, ReadOnlyMemory<byte> input = default, int maximumOutput = 65536,
         bool isFsctl = true, CancellationToken cancellationToken = default)
-        => (await IoControlCoreAsync(controlCode, input, maximumOutput, isFsctl, false, cancellationToken).ConfigureAwait(false)).Output;
+    {
+        return (await IoControlCoreAsync(controlCode, input, maximumOutput, isFsctl, false, cancellationToken).ConfigureAwait(false)).Output;
+    }
 
 
     /// <summary>构造句柄型 IOCTL/FSCTL，限制输入输出并核对返回控制码和 FileId。</summary>
@@ -629,7 +669,7 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         ThrowIfClosed();
         if (maximumOutput < 0 || maximumOutput > TransactionSize || input.Length > TransactionSize)
             throw new ArgumentOutOfRangeException(nameof(maximumOutput));
-        var body = new byte[56 + Math.Max(1, input.Length)];
+        byte[] body = new byte[56 + Math.Max(1, input.Length)];
         Wire.Put16(body, 0, 57);
         Wire.Put32(body, 4, controlCode);
         Id.Write(body, 8);
@@ -639,16 +679,16 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         Wire.Put32(body, 44, (uint)maximumOutput);
         Wire.Put32(body, 48, isFsctl ? 1u : 0);
         input.Span.CopyTo(body.AsSpan(56));
-        var response = await share.SendAsync(Command.Ioctl, body, cancellationToken, maximumOutput).ConfigureAwait(false);
+        Response response = await Share.SendAsync(Command.Ioctl, body, cancellationToken, maximumOutput).ConfigureAwait(false);
         if (allowOverflow)
             response.EnsureSuccess(SmbStatus.BufferOverflow);
         else
             response.EnsureSuccess();
         Wire.Structure(response.Packet, 49, 48);
-        if (Wire.U32(response.Packet, 68) != controlCode || SmbFileId.Read(response.Packet, 72) != Id ||
-            Wire.U32(response.Packet, 100) > maximumOutput)
-            throw new SmbProtocolException("Invalid SMB IOCTL response.");
-        return (Wire.Buffer(response.Packet, Wire.Int32(Wire.U32(response.Packet, 96)), Wire.U32(response.Packet, 100), 112),
+        return Wire.U32(response.Packet, 68) != controlCode || SmbFileId.Read(response.Packet, 72) != Id ||
+            Wire.U32(response.Packet, 100) > maximumOutput
+            ? throw new SmbProtocolException("Invalid SMB IOCTL response.")
+            : ((byte[] Output, bool Overflow))(Wire.Buffer(response.Packet, Wire.Int32(Wire.U32(response.Packet, 96)), Wire.U32(response.Packet, 100), 112),
             response.Status == SmbStatus.BufferOverflow);
     }
 
@@ -660,9 +700,9 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <returns>服务端返回的管道数据。</returns>
     public Task<byte[]> TransceivePipeAsync(ReadOnlyMemory<byte> request, int maximumResponse = 65536, CancellationToken cancellationToken = default)
     {
-        if (!share.IsPipeShare)
-            throw new InvalidOperationException("Pipe transceive requires an IPC share.");
-        return IoControlAsync(0x0011C017, request, maximumResponse, cancellationToken: cancellationToken);
+        return !Share.IsPipeShare
+            ? throw new InvalidOperationException("Pipe transceive requires an IPC share.")
+            : IoControlAsync(0x0011C017, request, maximumResponse, cancellationToken: cancellationToken);
     }
 
 
@@ -672,9 +712,9 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <returns>当前可返回的响应片段。</returns>
     internal async Task<byte[]> TransceivePipeFragmentAsync(ReadOnlyMemory<byte> request, CancellationToken cancellationToken)
     {
-        if (!share.IsPipeShare)
-            throw new InvalidOperationException("Pipe transceive requires an IPC share.");
-        return (await IoControlCoreAsync(0x0011C017, request, 65536, true, true, cancellationToken).ConfigureAwait(false)).Output;
+        return !Share.IsPipeShare
+            ? throw new InvalidOperationException("Pipe transceive requires an IPC share.")
+            : (await IoControlCoreAsync(0x0011C017, request, 65536, true, true, cancellationToken).ConfigureAwait(false)).Output;
     }
 
 
@@ -685,7 +725,7 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     /// <returns>零初始化并写好公共字段的字节数组。</returns>
     private byte[] FileIdBody(int length, ushort structureSize, int idOffset)
     {
-        var body = new byte[length];
+        byte[] body = new byte[length];
         Wire.Put16(body, 0, structureSize);
         Id.Write(body, idOffset);
         return body;
@@ -696,7 +736,7 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
     private void ThrowIfClosed()
     {
         ObjectDisposedException.ThrowIf(IsClosed, this);
-        share.ThrowIfDisposed();
+        Share.ThrowIfDisposed();
     }
 
 
@@ -710,13 +750,16 @@ public sealed partial class SmbFileHandle : IAsyncDisposable
         InvalidateOplock();
         try
         {
-            if (!share.Client.IsTransportAlive)
+            if (!Share.Client.IsTransportAlive)
                 return;
-            var response = await share.SendAsync(Command.Close, FileIdBody(24, 24, 8), CancellationToken.None).ConfigureAwait(false);
+            Response response = await Share.SendAsync(Command.Close, FileIdBody(24, 24, 8), CancellationToken.None).ConfigureAwait(false);
             response.EnsureSuccess(SmbStatus.FileClosed, SmbStatus.InvalidHandle);
             if (response.Status == SmbStatus.Success)
                 Wire.Structure(response.Packet, 60, 60);
         }
-        finally { share.RemoveHandle(Id); }
+        finally
+        {
+            Share.RemoveHandle(Id);
+        }
     }
 }

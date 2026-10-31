@@ -1,6 +1,6 @@
 # SMB 功能与现有实现对照
 
-核对日期：2026-10-26。对象：当前工作区中的 MonsterSyncDrive.SMB、Test.MonsterSyncDrive.SMB 和 Native AOT 验证工程。
+核对日期：2026-10-26。对象：当前工作区中的 MonsterSyncDrive.Library.SMB、Test.MonsterSyncDrive.SMB 和 Native AOT 验证工程。
 
 当前库具备 SMB2/3 文件访问与安全能力，并补齐本轮要求的传输、打开语义、分配、配额、传统 oplock、压缩、QoS 和类型化文件信息扩展。19个核心命令均有处理路径；Kerberos、DFS、lease、durable等其他可选能力仍按下表区分。命令数量不等于整体功能完成率。
 
@@ -33,7 +33,7 @@
 | 网络和消息校验 | [SmbConnection.cs](Protocol/SmbConnection.cs)、[Wire.cs](Protocol/Wire.cs) |
 | 身份认证与加密 | [Security](Security/NtlmV2.cs)、[Spnego.cs](Security/Spnego.cs)、[SmbCryptography.cs](Security/SmbCryptography.cs) |
 | 共享 RPC | [ShareEnumeration.cs](Protocol/ShareEnumeration.cs) |
-| 工程与验证 | [库工程](MonsterSyncDrive.SMB.csproj)、[测试工程](../Test.MonsterSyncDrive.SMB/Test.MonsterSyncDrive.SMB.csproj)、[AOT 工程](../Test.MonsterSyncDrive.SMB.AotSmoke/Test.MonsterSyncDrive.SMB.AotSmoke.csproj) |
+| 工程与验证 | [库工程](MonsterSyncDrive.Library.SMB.csproj)、[测试工程](../Test.MonsterSyncDrive.SMB/Test.MonsterSyncDrive.SMB.csproj)、[AOT 工程](../Test.MonsterSyncDrive.SMB.AotSmoke/Test.MonsterSyncDrive.SMB.AotSmoke.csproj) |
 
 ## 协议协商和传输
 

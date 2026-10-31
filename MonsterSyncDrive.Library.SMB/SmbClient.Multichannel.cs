@@ -21,11 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
+using MonsterSyncDrive.Library.SMB.Security;
 using System.Net;
-using MonsterSyncDrive.SMB.Protocol;
-using MonsterSyncDrive.SMB.Security;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>同一认证会话的附加通道绑定、服务器接口发现和请求分配实现。</summary>
 public sealed partial class SmbClient
@@ -79,7 +79,11 @@ public sealed partial class SmbClient
     /// <summary>在通道列表锁保护下检查是否仍有可发送新请求的连接。</summary>
     private bool HasLiveChannel
     {
-        get { lock (channelLock) return channels.Any(channel => channel.Connection.IsAlive); }
+        get
+        {
+            lock (channelLock)
+                return channels.Any(channel => channel.Connection.IsAlive);
+        }
     }
 
     /// <summary>将主连接注册为零号通道并绑定通知及失败事件。</summary>
@@ -122,8 +126,8 @@ public sealed partial class SmbClient
     {
         if (Volatile.Read(ref disposed) != 0)
             return; // 整个会话的主动释放不属于需要切换到替代通道的网络故障。
-        var survives = channels.Any(channel => channel.Connection.IsAlive);
-        foreach (var channel in channels)
+        bool survives = channels.Any(channel => channel.Connection.IsAlive);
+        foreach (Channel channel in channels)
         {
             if (channel.Connection.IsAlive || channel.DisconnectObserved)
                 continue;
@@ -160,17 +164,17 @@ public sealed partial class SmbClient
     {
         lock (channelLock)
         {
-            var live = channels.Where(channel => channel.Connection.IsAlive).ToArray();
+            Channel[] live = channels.Where(channel => channel.Connection.IsAlive).ToArray();
             if (live.Length == 0)
                 throw new IOException("The SMB session has no live transport channels.");
-            var ordinal = (uint)Interlocked.Increment(ref selectionSequence);
+            uint ordinal = (uint)Interlocked.Increment(ref selectionSequence);
             if (Options.Multichannel.SelectionPolicy == SmbChannelSelectionPolicy.RoundRobin)
                 return live[ordinal % (uint)live.Length].Connection;
             // 每个请求计数只读取一次。若先取最小值再重新读取，期间的并发完成可能使候选集为空。
             // 所有选择都基于同一批快照，确保最小值对应的候选至少存在一个。
-            var samples = live.Select(channel => (Channel: channel, Pending: channel.Connection.PendingRequestCount)).ToArray();
-            var minimum = samples.Min(sample => sample.Pending);
-            var eligible = samples.Where(sample => sample.Pending == minimum).ToArray();
+            (Channel Channel, int Pending)[] samples = live.Select(channel => (Channel: channel, Pending: channel.Connection.PendingRequestCount)).ToArray();
+            int minimum = samples.Min(sample => sample.Pending);
+            (Channel Channel, int Pending)[] eligible = samples.Where(sample => sample.Pending == minimum).ToArray();
             return eligible[ordinal % (uint)eligible.Length].Channel.Connection;
         }
     }
@@ -186,7 +190,7 @@ public sealed partial class SmbClient
         lock (channelLock)
             target = channels.FirstOrDefault(channel => channel.Id == channelId)?.Connection
                 ?? throw new ArgumentOutOfRangeException(nameof(channelId));
-        var response = await target.SendAsync(Command.Echo, new byte[] { 4, 0, 0, 0 }, 0, cancellationToken).ConfigureAwait(false);
+        Response response = await target.SendAsync(Command.Echo, new byte[] { 4, 0, 0, 0 }, 0, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccess();
         Wire.Structure(response.Packet, 4, 4);
     }
@@ -215,7 +219,7 @@ public sealed partial class SmbClient
             throw new NotSupportedException("SMB guest and anonymous sessions cannot bind additional channels.");
         if (ConnectionInfo.SigningAlgorithm == SmbSigningAlgorithm.AesGmac)
             throw new NotSupportedException("GMAC channel binding is disabled because per-connection binding message IDs can reuse a session signing nonce. Select AES-CMAC for multichannel.");
-        var validated = (endpointOptions with
+        SmbClientOptions validated = (endpointOptions with
         {
             ClientGuid = Options.ClientGuid,
             MinimumDialect = ConnectionInfo.Dialect,
@@ -244,7 +248,7 @@ public sealed partial class SmbClient
                 throw new IOException("The additional SMB channel disconnected before it could be registered.");
             cancellationToken.ThrowIfCancellationRequested();
             ThrowIfDisposed();
-            var id = Interlocked.Increment(ref channelSequence);
+            int id = Interlocked.Increment(ref channelSequence);
             var channel = new Channel(id, additional, validated, false);
             lock (channelLock)
                 channels.Add(channel);
@@ -256,7 +260,7 @@ public sealed partial class SmbClient
         {
             if (additional is not null)
                 await additional.DisposeAsync().ConfigureAwait(false);
-            channelGate.Release();
+            _ = channelGate.Release();
         }
     }
 
@@ -274,13 +278,13 @@ public sealed partial class SmbClient
             throw new ArgumentException("The share belongs to another SMB session.", nameof(share));
         if (!MultichannelSupported)
             throw new NotSupportedException("The server did not negotiate SMB3 multichannel support.");
-        var request = new byte[57];
+        byte[] request = new byte[57];
         Wire.Put16(request, 0, 57);
         Wire.Put32(request, 4, 0x001401FC);
         request.AsSpan(8, 16).Fill(0xFF);
         Wire.Put32(request, 44, 65536);
         Wire.Put32(request, 48, 1);
-        var response = await SendAsync(Command.Ioctl, request, share.TreeId, cancellationToken,
+        Response response = await SendAsync(Command.Ioctl, request, share.TreeId, cancellationToken,
             65536, share.EncryptionRequired).ConfigureAwait(false);
         response.EnsureSuccess();
         Wire.Structure(response.Packet, 49, 48);
@@ -288,7 +292,7 @@ public sealed partial class SmbClient
             !response.Packet.AsSpan(72, 16).SequenceEqual(new byte[] { 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255 }) ||
             Wire.U32(response.Packet, 100) > 65536)
             throw new SmbProtocolException("Invalid SMB network-interface response.");
-        var data = Wire.Buffer(response.Packet, Wire.Int32(Wire.U32(response.Packet, 96)), Wire.U32(response.Packet, 100), 112);
+        byte[] data = Wire.Buffer(response.Packet, Wire.Int32(Wire.U32(response.Packet, 96)), Wire.U32(response.Packet, 100), 112);
         return ParseNetworkInterfaces(data);
     }
 
@@ -300,20 +304,20 @@ public sealed partial class SmbClient
     {
         var result = new List<SmbNetworkInterfaceInfo>();
         var seen = new HashSet<(uint Index, IPAddress Address)>();
-        var offset = 0;
+        int offset = 0;
         while (offset < data.Length)
         {
-            var entry = Wire.Slice(data, offset, 152);
-            var next = Wire.U32(entry, 0);
-            var index = Wire.U32(entry, 4);
+            ReadOnlySpan<byte> entry = Wire.Slice(data, offset, 152);
+            uint next = Wire.U32(entry, 0);
+            uint index = Wire.U32(entry, 4);
             var capability = (SmbNetworkInterfaceCapabilities)Wire.U32(entry, 8);
             if (index == 0 || (next != 0 && (next < 152 || next % 8 != 0 || next >= data.Length - offset)))
                 throw new SmbProtocolException("Invalid network-interface entry chain.");
-            var socket = entry[24..];
-            var family = Wire.U16(socket, 0);
+            ReadOnlySpan<byte> socket = entry[24..];
+            ushort family = Wire.U16(socket, 0);
             // 依照 MS-SMB2 2.2.32.5.1.1/2，Port、FlowInfo 和 ScopeId 均为接收时必须忽略的保留域。
             // 服务器接口上的区域索引不能当作本机连接 IPv6 链路本地地址时的区域索引。
-            var address = family switch
+            IPAddress address = family switch
             {
                 2 => new IPAddress(socket.Slice(4, 4)),
                 23 => new IPAddress(socket.Slice(8, 16)),
@@ -341,26 +345,29 @@ public sealed partial class SmbClient
         ThrowIfDisposed();
         if (!Options.Multichannel.Enabled || !MultichannelSupported)
             throw new NotSupportedException("Both endpoints must enable SMB3 multichannel.");
-        var owned = discoveryShare is null;
-        var share = discoveryShare ?? await ConnectShareAsync("IPC$", cancellationToken).ConfigureAwait(false);
+        bool owned = discoveryShare is null;
+        SmbShare share = discoveryShare ?? await ConnectShareAsync("IPC$", cancellationToken).ConfigureAwait(false);
         try
         {
-            var interfaces = await QueryNetworkInterfacesAsync(share, cancellationToken).ConfigureAwait(false);
-            var ordered = interfaces.OrderByDescending(item => (item.Capabilities & SmbNetworkInterfaceCapabilities.RssCapable) != 0)
+            IReadOnlyList<SmbNetworkInterfaceInfo> interfaces = await QueryNetworkInterfacesAsync(share, cancellationToken).ConfigureAwait(false);
+            SmbNetworkInterfaceInfo[] ordered = interfaces.OrderByDescending(item => (item.Capabilities & SmbNetworkInterfaceCapabilities.RssCapable) != 0)
                 .ThenByDescending(item => item.LinkSpeed).ToArray();
             var added = new List<SmbChannelInfo>();
-            foreach (var item in ordered)
+            foreach (SmbNetworkInterfaceInfo? item in ordered)
             {
-                var perInterface = (item.Capabilities & SmbNetworkInterfaceCapabilities.RssCapable) != 0
+                int perInterface = (item.Capabilities & SmbNetworkInterfaceCapabilities.RssCapable) != 0
                     ? Options.Multichannel.MaximumChannels : 1;
-                for (var attempt = 0; attempt < perInterface; attempt++)
+                for (int attempt = 0; attempt < perInterface; attempt++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (Channels.Count(channel => channel.IsConnected) >= Options.Multichannel.MaximumChannels)
                         return added;
-                    var options = Options with
+                    SmbClientOptions options = Options with
                     {
-                        Transport = Options.Transport with { RemoteAddress = item.Address }
+                        Transport = Options.Transport with
+                        {
+                            RemoteAddress = item.Address
+                        }
                     };
                     added.Add(await AddChannelAsync(options, credential, cancellationToken).ConfigureAwait(false));
                 }
@@ -383,9 +390,9 @@ public sealed partial class SmbClient
             ObserveDisconnectedChannels();
             failed = channels.Where(channel => !channel.Primary && !channel.Connection.IsAlive)
                 .Select(channel => channel.Connection).ToArray();
-            channels.RemoveAll(channel => !channel.Primary && !channel.Connection.IsAlive);
+            _ = channels.RemoveAll(channel => !channel.Primary && !channel.Connection.IsAlive);
         }
-        foreach (var dead in failed)
+        foreach (SmbConnection dead in failed)
             await dead.DisposeAsync().ConfigureAwait(false);
     }
 
@@ -395,11 +402,14 @@ public sealed partial class SmbClient
         await channelGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            foreach (var channel in SnapshotConnections())
+            foreach (SmbConnection channel in SnapshotConnections())
                 await channel.DisposeAsync().ConfigureAwait(false);
             sessionCryptography?.Dispose();
             sessionCryptography = null;
         }
-        finally { channelGate.Release(); }
+        finally
+        {
+            _ = channelGate.Release();
+        }
     }
 }

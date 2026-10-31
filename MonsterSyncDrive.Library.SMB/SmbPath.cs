@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>在所有操作系统上按共享相对路径解析 SMB 名称，统一使用反斜杠，不依赖本地路径规则。</summary>
 public static class SmbPath
@@ -39,16 +39,16 @@ public static class SmbPath
         if (path.Contains('\0') || path.StartsWith(@"\\", StringComparison.Ordinal) ||
             path.StartsWith("//", StringComparison.Ordinal))
             throw new ArgumentException("Use a share-relative path without NUL, UNC prefix or drive name.", nameof(path));
-        var parts = path.Replace('/', '\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
-        for (var i = 0; i < parts.Length; i++)
+        string[] parts = path.Replace('/', '\\').Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < parts.Length; i++)
         {
-            var part = parts[i];
+            string part = parts[i];
             if (part is "." or ".." || part.IndexOfAny(['*', '?', '"', '<', '>', '|']) >= 0)
                 throw new ArgumentException("Relative navigation and wildcards are not valid file paths.", nameof(path));
             // 只有末级文件名允许 ADS；中间目录不能携带流名，流类型也只接受 $DATA。
             if (part.Contains(':'))
             {
-                var streamParts = part.Split(':');
+                string[] streamParts = part.Split(':');
                 if (i != parts.Length - 1 || streamParts.Length is < 2 or > 3 ||
                     streamParts[0].Length == 0 || streamParts[0] is "." or ".." ||
                     (streamParts.Length == 2 && streamParts[1].Length == 0) ||
@@ -56,10 +56,8 @@ public static class SmbPath
                     throw new ArgumentException("Invalid drive or alternate data stream path.", nameof(path));
             }
         }
-        var normalized = string.Join('\\', parts);
-        if (normalized.Length > 32760)
-            throw new PathTooLongException();
-        return normalized;
+        string normalized = string.Join('\\', parts);
+        return normalized.Length > 32760 ? throw new PathTooLongException() : normalized;
     }
 
     /// <summary>为一个普通共享内文件路径构造 :stream:$DATA 备用数据流路径。</summary>
@@ -69,11 +67,11 @@ public static class SmbPath
     /// <exception cref="ArgumentException">文件路径或流名称不满足备用数据流命名要求。</exception>
     public static string WithStream(string path, string streamName)
     {
-        var normalized = Normalize(path);
+        string normalized = Normalize(path);
         ArgumentException.ThrowIfNullOrWhiteSpace(streamName);
-        if (normalized.Length == 0 || normalized.Contains(':') || streamName.IndexOfAny(['\\', '/', ':', '\0']) >= 0)
-            throw new ArgumentException("Use a file path and a single alternate stream name.");
-        return Normalize(normalized + ":" + streamName + ":$DATA");
+        return normalized.Length == 0 || normalized.Contains(':') || streamName.IndexOfAny(['\\', '/', ':', '\0']) >= 0
+            ? throw new ArgumentException("Use a file path and a single alternate stream name.")
+            : Normalize(normalized + ":" + streamName + ":$DATA");
     }
 
     /// <summary>按 SMB 共享内规则合并目录和子路径，两部分均经过独立路径校验。</summary>
@@ -83,8 +81,8 @@ public static class SmbPath
     /// <exception cref="ArgumentException">任一部分不符合共享内路径规则。</exception>
     public static string Combine(string directory, string name)
     {
-        var normalizedDirectory = Normalize(directory);
-        var normalizedName = Normalize(name);
+        string normalizedDirectory = Normalize(directory);
+        string normalizedName = Normalize(name);
         return Normalize(normalizedDirectory.Length == 0 ? normalizedName : normalizedDirectory + "\\" + normalizedName);
     }
 
@@ -95,8 +93,8 @@ public static class SmbPath
     internal static string ValidateShare(string share)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(share);
-        if (share.IndexOfAny(['\\', '/', '\0', ':']) >= 0 || share is "." or "..")
-            throw new ArgumentException("Specify a single share name.", nameof(share));
-        return share;
+        return share.IndexOfAny(['\\', '/', '\0', ':']) >= 0 || share is "." or ".."
+            ? throw new ArgumentException("Specify a single share name.", nameof(share))
+            : share;
     }
 }

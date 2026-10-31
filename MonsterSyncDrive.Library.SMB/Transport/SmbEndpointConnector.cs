@@ -24,7 +24,7 @@
 using System.Net;
 using System.Net.Sockets;
 
-namespace MonsterSyncDrive.SMB.Transport;
+namespace MonsterSyncDrive.Library.SMB.Transport;
 
 /// <summary>解析逻辑主机名称，并在显式地址族和源地址绑定约束下连接具体端点。</summary>
 internal static class SmbEndpointConnector
@@ -37,28 +37,37 @@ internal static class SmbEndpointConnector
     /// <exception cref="SocketException">没有地址同时满足请求的地址族和本地绑定要求。</exception>
     internal static async Task<IPAddress[]> ResolveAsync(string host, SmbTransportOptions options, CancellationToken cancellationToken)
     {
-        if (host.StartsWith('[') && host.EndsWith(']')) host = host[1..^1];
-        var addresses = options.RemoteAddress is { } explicitAddress ? [explicitAddress]
-            : IPAddress.TryParse(host, out var literal) ? [literal]
+        if (host.StartsWith('[') && host.EndsWith(']'))
+            host = host[1..^1];
+        IPAddress[] addresses = options.RemoteAddress is { } explicitAddress ? [explicitAddress]
+            : IPAddress.TryParse(host, out IPAddress? literal) ? [literal]
             : await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
-        var family = options.Kind == SmbTransportKind.NetBios ? AddressFamily.InterNetwork
-            : options.AddressFamily switch { SmbAddressFamilyPreference.IPv4Only => AddressFamily.InterNetwork, SmbAddressFamilyPreference.IPv6Only => AddressFamily.InterNetworkV6, _ => AddressFamily.Unspecified };
+        AddressFamily family = options.Kind == SmbTransportKind.NetBios ? AddressFamily.InterNetwork
+            : options.AddressFamily switch
+            {
+                SmbAddressFamilyPreference.IPv4Only => AddressFamily.InterNetwork,
+                SmbAddressFamilyPreference.IPv6Only => AddressFamily.InterNetworkV6,
+                _ => AddressFamily.Unspecified
+            };
         addresses = addresses.Where(a => a.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6)
             .Where(a => family == AddressFamily.Unspecified || a.AddressFamily == family)
             .Where(a => options.LocalAddress is null || options.LocalAddress.AddressFamily == a.AddressFamily)
             .Distinct().Take(128).ToArray();
-        if (addresses.Length == 0) throw new SocketException((int)SocketError.AddressFamilyNotSupported);
-        var preferV6 = options.AddressFamily == SmbAddressFamilyPreference.PreferIPv6 ||
+        if (addresses.Length == 0)
+            throw new SocketException((int)SocketError.AddressFamilyNotSupported);
+        bool preferV6 = options.AddressFamily == SmbAddressFamilyPreference.PreferIPv6 ||
             (options.AddressFamily != SmbAddressFamilyPreference.PreferIPv4 && addresses[0].AddressFamily == AddressFamily.InterNetworkV6);
         // 交错排列两种地址族，避免将全部优先地址族的地址排在另一地址族之前。
         // 不可达的 IPv6 路由不应导致第一次 IPv4 尝试排在全部 AAAA 记录之后。
-        var first = new Queue<IPAddress>(addresses.Where(a => (a.AddressFamily == AddressFamily.InterNetworkV6) == preferV6));
-        var second = new Queue<IPAddress>(addresses.Where(a => (a.AddressFamily == AddressFamily.InterNetworkV6) != preferV6));
+        var first = new Queue<IPAddress>(addresses.Where(a => a.AddressFamily == AddressFamily.InterNetworkV6 == preferV6));
+        var second = new Queue<IPAddress>(addresses.Where(a => a.AddressFamily == AddressFamily.InterNetworkV6 != preferV6));
         var ordered = new List<IPAddress>(addresses.Length);
         while (first.Count + second.Count > 0)
         {
-            if (first.TryDequeue(out var a)) ordered.Add(a);
-            if (second.TryDequeue(out var b)) ordered.Add(b);
+            if (first.TryDequeue(out IPAddress? a))
+                ordered.Add(a);
+            if (second.TryDequeue(out IPAddress? b))
+                ordered.Add(b);
         }
         return ordered.ToArray();
     }
@@ -71,16 +80,22 @@ internal static class SmbEndpointConnector
     /// <returns>竞速成功且由调用方持有的已连接套接字。</returns>
     internal static async Task<TcpClient> ConnectTcpAsync(string host, int port, SmbTransportOptions options, CancellationToken cancellationToken)
     {
-        var addresses = await ResolveAsync(host, options, cancellationToken).ConfigureAwait(false);
+        IPAddress[] addresses = await ResolveAsync(host, options, cancellationToken).ConfigureAwait(false);
         using var race = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var errors = new List<Exception>();
         // 固定的本地 TCP 端口不能同时绑定到多个竞速连接尝试。
         if (options.LocalPort != 0)
         {
-            foreach (var address in addresses)
+            foreach (IPAddress address in addresses)
             {
-                try { return await AttemptAsync(address, port, options, TimeSpan.Zero, cancellationToken).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is SocketException or IOException) { errors.Add(ex); }
+                try
+                {
+                    return await AttemptAsync(address, port, options, TimeSpan.Zero, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is SocketException or IOException)
+                {
+                    errors.Add(ex);
+                }
             }
             throw Failure(errors);
         }
@@ -89,19 +104,28 @@ internal static class SmbEndpointConnector
         {
             while (tasks.Count > 0)
             {
-                var completed = await Task.WhenAny(tasks).ConfigureAwait(false);
-                tasks.Remove(completed);
-                try { return await completed.ConfigureAwait(false); }
-                catch (Exception ex) when (ex is SocketException or IOException) { errors.Add(ex); }
+                Task<TcpClient> completed = await Task.WhenAny(tasks).ConfigureAwait(false);
+                _ = tasks.Remove(completed);
+                try
+                {
+                    return await completed.ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is SocketException or IOException)
+                {
+                    errors.Add(ex);
+                }
             }
             throw Failure(errors);
         }
         finally
         {
             await race.CancelAsync().ConfigureAwait(false);
-            foreach (var task in tasks)
+            foreach (Task<TcpClient>? task in tasks)
             {
-                try { SmbSocketTrafficClass.Dispose(await task.ConfigureAwait(false)); }
+                try
+                {
+                    SmbSocketTrafficClass.Dispose(await task.ConfigureAwait(false));
+                }
                 catch (Exception ex) when (ex is OperationCanceledException or SocketException or IOException or PlatformNotSupportedException or System.ComponentModel.Win32Exception) { }
             }
         }
@@ -116,21 +140,30 @@ internal static class SmbEndpointConnector
     /// <returns>已连接的套接字；任何失败都会释放本次尝试创建的套接字。</returns>
     private static async Task<TcpClient> AttemptAsync(IPAddress address, int port, SmbTransportOptions options, TimeSpan delay, CancellationToken cancellationToken)
     {
-        if (delay > TimeSpan.Zero) await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        if (delay > TimeSpan.Zero)
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
         var tcp = new TcpClient(address.AddressFamily) { NoDelay = true };
         try
         {
             if (options.LocalAddress is not null || options.LocalPort != 0)
                 tcp.Client.Bind(new IPEndPoint(options.LocalAddress ?? (address.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any), options.LocalPort));
             await tcp.ConnectAsync(address, port, cancellationToken).ConfigureAwait(false);
-            if (options.Dscp is { } dscp) SmbSocketTrafficClass.Apply(tcp.Client, dscp);
+            if (options.Dscp is { } dscp)
+                SmbSocketTrafficClass.Apply(tcp.Client, dscp);
             return tcp;
         }
-        catch { tcp.Dispose(); throw; }
+        catch
+        {
+            tcp.Dispose();
+            throw;
+        }
     }
 
     /// <summary>单个端点失败时保留原始错误，多个地址失败时保留全部尝试的错误。</summary>
     /// <param name="errors">按观察到的完成顺序记录的端点错误。</param>
     /// <returns>需要向调用方传播的异常。</returns>
-    private static Exception Failure(List<Exception> errors) => errors.Count == 1 ? errors[0] : new IOException("No resolved SMB endpoint could be reached.", new AggregateException(errors));
+    private static Exception Failure(List<Exception> errors)
+    {
+        return errors.Count == 1 ? errors[0] : new IOException("No resolved SMB endpoint could be reached.", new AggregateException(errors));
+    }
 }

@@ -26,7 +26,7 @@ using System.Net.Quic;
 using System.Net.Security;
 using System.Security.Authentication;
 
-namespace MonsterSyncDrive.SMB.Transport;
+namespace MonsterSyncDrive.Library.SMB.Transport;
 
 /// <summary>建立单条 SMB QUIC 双向流，采用经过身份验证的 TLS 1.3 和 ALPN smb。</summary>
 internal static class SmbQuicTransport
@@ -46,41 +46,59 @@ internal static class SmbQuicTransport
     {
         if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) || !QuicConnection.IsSupported)
             throw new PlatformNotSupportedException("SMB over QUIC requires a supported System.Net.Quic platform and the Microsoft MsQuic runtime.");
-        if (options.Dscp is not null) throw new PlatformNotSupportedException("System.Net.Quic does not expose per-connection DSCP configuration.");
-        var addresses = await SmbEndpointConnector.ResolveAsync(host, options, cancellationToken).ConfigureAwait(false);
-        using var race = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (options.Dscp is not null)
+            throw new PlatformNotSupportedException("System.Net.Quic does not expose per-connection DSCP configuration.");
+        IPAddress[] addresses = await SmbEndpointConnector.ResolveAsync(host, options, cancellationToken).ConfigureAwait(false);
+        using CancellationTokenSource race = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (options.LocalPort != 0)
         {
-            var sequentialErrors = new List<Exception>();
-            foreach (var address in addresses)
+            List<Exception> sequentialErrors = new();
+            foreach (IPAddress address in addresses)
             {
-                try { return await AttemptAsync(address, host, port, options, maximum, TimeSpan.Zero, cancellationToken).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is QuicException or AuthenticationException or System.Net.Sockets.SocketException) { sequentialErrors.Add(ex); }
+                try
+                {
+                    return await AttemptAsync(address, host, port, options, maximum, TimeSpan.Zero, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is QuicException or AuthenticationException or System.Net.Sockets.SocketException)
+                {
+                    sequentialErrors.Add(ex);
+                }
             }
-            if (sequentialErrors.Count == 1) throw sequentialErrors[0];
+            if (sequentialErrors.Count == 1)
+                throw sequentialErrors[0];
             throw new IOException("No resolved SMB QUIC endpoint could be reached.", new AggregateException(sequentialErrors));
         }
-        var tasks = addresses.Select((a, i) => AttemptAsync(a, host, port, options, maximum,
+        List<Task<ISmbMessageTransport>> tasks = addresses.Select((a, i) => AttemptAsync(a, host, port, options, maximum,
             options.AddressRaceDelay * i, race.Token)).ToList();
-        var errors = new List<Exception>();
+        List<Exception> errors = new();
         try
         {
             while (tasks.Count > 0)
             {
-                var completed = await Task.WhenAny(tasks).ConfigureAwait(false);
-                tasks.Remove(completed);
-                try { return await completed.ConfigureAwait(false); }
-                catch (Exception ex) when (ex is QuicException or AuthenticationException or System.Net.Sockets.SocketException) { errors.Add(ex); }
+                Task<ISmbMessageTransport> completed = await Task.WhenAny(tasks).ConfigureAwait(false);
+                _ = tasks.Remove(completed);
+                try
+                {
+                    return await completed.ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is QuicException or AuthenticationException or System.Net.Sockets.SocketException)
+                {
+                    errors.Add(ex);
+                }
             }
-            if (errors.Count == 1) throw errors[0];
+            if (errors.Count == 1)
+                throw errors[0];
             throw new IOException("No resolved SMB QUIC endpoint could be reached.", new AggregateException(errors));
         }
         finally
         {
             await race.CancelAsync().ConfigureAwait(false);
-            foreach (var task in tasks)
+            foreach (Task<ISmbMessageTransport>? task in tasks)
             {
-                try { await (await task.ConfigureAwait(false)).DisposeAsync().ConfigureAwait(false); }
+                try
+                {
+                    await (await task.ConfigureAwait(false)).DisposeAsync().ConfigureAwait(false);
+                }
                 catch (Exception ex) when (ex is OperationCanceledException or QuicException or AuthenticationException or System.Net.Sockets.SocketException or IOException) { }
             }
         }
@@ -100,11 +118,12 @@ internal static class SmbQuicTransport
     {
         if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()) || !QuicConnection.IsSupported)
             throw new PlatformNotSupportedException("QUIC is unavailable.");
-        if (delay > TimeSpan.Zero) await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        if (delay > TimeSpan.Zero)
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
         // 默认不安装放宽证书验证的回调；目标地址覆盖设置与
         // TargetHost 分别管理，因此为多通道选择 IP 地址时，不会
         // 悄然改变应用原本要验证的服务器证书身份。
-        var tls = new SslClientAuthenticationOptions
+        SslClientAuthenticationOptions tls = new()
         {
             TargetHost = options.Quic.ServerName ?? host.Trim('[', ']'),
             ApplicationProtocols = [ApplicationProtocol],
@@ -115,7 +134,7 @@ internal static class SmbQuicTransport
             CertificateRevocationCheckMode = options.Quic.CertificateRevocationCheckMode,
             AllowRenegotiation = false
         };
-        var connection = await QuicConnection.ConnectAsync(new QuicClientConnectionOptions
+        QuicConnection connection = await QuicConnection.ConnectAsync(new QuicClientConnectionOptions
         {
             RemoteEndPoint = new IPEndPoint(address, port),
             LocalEndPoint = options.LocalAddress is not null || options.LocalPort != 0
@@ -132,31 +151,50 @@ internal static class SmbQuicTransport
         }, cancellationToken).ConfigureAwait(false);
         try
         {
-            var stream = await connection.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, cancellationToken).ConfigureAwait(false);
+            QuicStream stream = await connection.OpenOutboundStreamAsync(QuicStreamType.Bidirectional, cancellationToken).ConfigureAwait(false);
             var closeGate = new object();
             Task? close = null;
             // 先释放字节流，再释放持有它的 QUIC 连接。
             async Task CloseAsync()
             {
-                if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())) return;
-                try { await stream.DisposeAsync().ConfigureAwait(false); }
+                if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
+                    return;
+                try
+                {
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                }
                 catch (QuicException) { }
-                finally { await connection.DisposeAsync().ConfigureAwait(false); }
+                finally
+                {
+                    await connection.DisposeAsync().ConfigureAwait(false);
+                }
             }
             // 在重复调用之间共享同一次异步释放操作。
             ValueTask DisposeOwner()
             {
-                lock (closeGate) { close ??= CloseAsync(); return new ValueTask(close); }
+                lock (closeGate)
+                {
+                    close ??= CloseAsync();
+                    return new ValueTask(close);
+                }
             }
             // 中断字节流的两个方向，防止挂起的分帧读取一直阻塞。
             void AbortOwner()
             {
-                if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())) return;
-                try { stream.Abort(QuicAbortDirection.Both, 0); }
+                if (!(OperatingSystem.IsWindows() || OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
+                    return;
+                try
+                {
+                    stream.Abort(QuicAbortDirection.Both, 0);
+                }
                 catch (ObjectDisposedException) { }
             }
             return new SmbStreamMessageTransport(stream, SmbTransportKind.Quic, maximum, connection.LocalEndPoint, connection.RemoteEndPoint, AbortOwner, DisposeOwner);
         }
-        catch { await connection.DisposeAsync().ConfigureAwait(false); throw; }
+        catch
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 }

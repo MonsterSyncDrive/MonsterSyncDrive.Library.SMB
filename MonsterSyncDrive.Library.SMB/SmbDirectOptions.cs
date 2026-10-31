@@ -21,9 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Net;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>MS-SMBD 传输限制，以及连接所使用的 RDMA 设备提供程序。</summary>
 /// <remarks>
@@ -34,9 +35,15 @@ namespace MonsterSyncDrive.SMB;
 public sealed record SmbDirectOptions
 {
     /// <summary>覆盖原生提供程序；为空时在 64 位 Windows 上选用内置 NetworkDirect 后端。</summary>
-    public ISmbRdmaProvider? Provider { get; init; }
+    public ISmbRdmaProvider? Provider
+    {
+        get; init;
+    }
     /// <summary>可选的本地 RDMA 网卡 IP 和端口；通配地址通过操作系统路由选择。</summary>
-    public IPEndPoint? LocalEndPoint { get; init; }
+    public IPEndPoint? LocalEndPoint
+    {
+        get; init;
+    }
     /// <summary>向对端请求的 SEND 信用总数，包括已经持有的信用。</summary>
     public ushort SendCreditTarget { get; init; } = 128;
     /// <summary>向对端公布的、由硬件接收资源支持的信用上限。</summary>
@@ -67,11 +74,14 @@ public sealed record SmbDirectOptions
         if (PreferredSendSize < 128 || MaximumReceiveSize < 128 || MaximumFragmentedReceiveSize < 131072 || MaximumReadWriteSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(PreferredSendSize), "Invalid SMB Direct transfer limits.");
         ArgumentOutOfRangeException.ThrowIfNegative(DirectPlacementThreshold);
-        if (KeepaliveInterval != Timeout.InfiniteTimeSpan && (KeepaliveInterval <= TimeSpan.Zero || KeepaliveInterval.TotalMilliseconds > uint.MaxValue - 1))
-            throw new ArgumentOutOfRangeException(nameof(KeepaliveInterval));
-        if (KeepaliveTimeout <= TimeSpan.Zero || KeepaliveTimeout.TotalMilliseconds > uint.MaxValue - 1)
-            throw new ArgumentOutOfRangeException(nameof(KeepaliveTimeout));
-        return this with { LocalEndPoint = LocalEndPoint is null ? null : new IPEndPoint(LocalEndPoint.Address, LocalEndPoint.Port) };
+        return KeepaliveInterval != Timeout.InfiniteTimeSpan && (KeepaliveInterval <= TimeSpan.Zero || KeepaliveInterval.TotalMilliseconds > uint.MaxValue - 1)
+            ? throw new ArgumentOutOfRangeException(nameof(KeepaliveInterval))
+            : KeepaliveTimeout <= TimeSpan.Zero || KeepaliveTimeout.TotalMilliseconds > uint.MaxValue - 1
+            ? throw new ArgumentOutOfRangeException(nameof(KeepaliveTimeout))
+            : (this with
+            {
+                LocalEndPoint = LocalEndPoint is null ? null : new IPEndPoint(LocalEndPoint.Address, LocalEndPoint.Port)
+            });
     }
 }
 
@@ -103,15 +113,30 @@ public interface ISmbRdmaProvider
 public interface ISmbRdmaEndpoint : IAsyncDisposable
 {
     /// <summary>实际绑定的 RDMA 源地址。</summary>
-    EndPoint? LocalEndPoint { get; }
+    EndPoint? LocalEndPoint
+    {
+        get;
+    }
     /// <summary>实际连接的 RDMA 目标地址。</summary>
-    EndPoint? RemoteEndPoint { get; }
+    EndPoint? RemoteEndPoint
+    {
+        get;
+    }
     /// <summary>单条 SEND 工作请求的最大字节数。</summary>
-    int MaximumSendSize { get; }
+    int MaximumSendSize
+    {
+        get;
+    }
     /// <summary>单条 RECEIVE 工作请求的最大字节数。</summary>
-    int MaximumReceiveSize { get; }
+    int MaximumReceiveSize
+    {
+        get;
+    }
     /// <summary>由设备资源支持的未完成或已排队接收数量。</summary>
-    ushort MaximumReceiveQueueDepth { get; }
+    ushort MaximumReceiveQueueDepth
+    {
+        get;
+    }
     /// <summary>是否允许对端读取本地注册区域；仅支持消息传输的提供程序应返回假。</summary>
     bool SupportsRemoteRead => true;
     /// <summary>是否允许对端写入本地注册区域；仅支持消息传输的提供程序应返回假。</summary>
@@ -164,26 +189,40 @@ public sealed class SmbRdmaReceive : IDisposable
     /// <summary>持有提供程序的接收缓冲区租约，直到使用方释放。</summary>
     private IDisposable? lease;
     /// <summary>在本次完成租约生命周期内有效的字节。</summary>
-    public ReadOnlyMemory<byte> Data { get; }
+    public ReadOnlyMemory<byte> Data
+    {
+        get;
+    }
     /// <summary>对端 SEND 操作失效的可选本地导向令牌。</summary>
-    public uint? InvalidatedToken { get; }
+    public uint? InvalidatedToken
+    {
+        get;
+    }
     /// <summary>创建完成结果，并保留提供程序缓冲区的租约。</summary>
     /// <param name="data">一条完整的 RDMA SEND 负载。</param>
     /// <param name="invalidatedToken">原生失效完成结果报告的令牌。</param>
     /// <param name="bufferLease">由 Dispose 恰好释放一次的租约。</param>
     public SmbRdmaReceive(ReadOnlyMemory<byte> data, uint? invalidatedToken = null, IDisposable? bufferLease = null)
     {
-        Data = data; InvalidatedToken = invalidatedToken; lease = bufferLease;
+        Data = data;
+        InvalidatedToken = invalidatedToken;
+        lease = bufferLease;
     }
     /// <summary>恰好释放一次原生接收缓冲区。</summary>
-    public void Dispose() => Interlocked.Exchange(ref lease, null)?.Dispose();
+    public void Dispose()
+    {
+        Interlocked.Exchange(ref lease, null)?.Dispose();
+    }
 }
 
 /// <summary>提供程序拥有的注册对象；释放时必须等待远程操作结束并注销内存。</summary>
 public abstract class SmbRdmaMemoryRegistration : IAsyncDisposable
 {
     /// <summary>按逻辑缓冲区顺序排列的已注册远程访问片段。</summary>
-    public abstract IReadOnlyList<SmbRdmaBufferDescriptor> Descriptors { get; }
+    public abstract IReadOnlyList<SmbRdmaBufferDescriptor> Descriptors
+    {
+        get;
+    }
     /// <summary>等待远程操作结束并注销内存后返回。</summary>
     public abstract ValueTask DisposeAsync();
 }

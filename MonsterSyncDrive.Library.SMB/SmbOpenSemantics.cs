@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>向服务器说明文件访问模式的缓存提示，不改变按偏移读写的语义。</summary>
 public enum SmbAccessPattern
@@ -56,11 +56,13 @@ public static class SmbOpenSemantics
     public static SmbOpenOptions ForRead(SmbAccessPattern pattern = SmbAccessPattern.Normal,
         SmbBufferingMode buffering = SmbBufferingMode.Buffered, bool backupIntent = false,
         SmbShareAccess sharing = SmbShareAccess.All)
-        => Apply(new SmbOpenOptions
+    {
+        return Apply(new SmbOpenOptions
         {
             Access = SmbAccessMask.GenericRead | SmbAccessMask.Synchronize,
             ShareAccess = sharing
         }, pattern, buffering, backupIntent);
+    }
 
     /// <summary>构造写入普通文件的选项，并允许读取文件属性以核对写入结果。</summary>
     /// <param name="disposition">文件不存在或已存在时采用的创建、打开或覆盖策略。</param>
@@ -73,12 +75,14 @@ public static class SmbOpenSemantics
     public static SmbOpenOptions ForWrite(SmbCreateDisposition disposition = SmbCreateDisposition.OpenIf,
         SmbAccessPattern pattern = SmbAccessPattern.Normal, SmbBufferingMode buffering = SmbBufferingMode.Buffered,
         bool backupIntent = false, SmbShareAccess sharing = SmbShareAccess.All)
-        => Apply(new SmbOpenOptions
+    {
+        return Apply(new SmbOpenOptions
         {
             Access = SmbAccessMask.GenericWrite | SmbAccessMask.ReadAttributes | SmbAccessMask.Synchronize,
             Disposition = disposition,
             ShareAccess = sharing
         }, pattern, buffering, backupIntent);
+    }
 
     /// <summary>
     /// 在现有选项上替换访问提示、缓冲和备份意图，保留处置方式、共享权限及其他创建标志。
@@ -98,7 +102,7 @@ public static class SmbOpenSemantics
         if (!Enum.IsDefined(pattern) || !Enum.IsDefined(buffering))
             throw new ArgumentOutOfRangeException(nameof(pattern));
         // 先移除这一组提示，再按本次参数重建；否则重复 Apply 会意外保留上次访问模式。
-        var flags = options.CreateOptions & ~(SmbCreateOptions.SequentialOnly | SmbCreateOptions.RandomAccess |
+        SmbCreateOptions flags = options.CreateOptions & ~(SmbCreateOptions.SequentialOnly | SmbCreateOptions.RandomAccess |
             SmbCreateOptions.NoIntermediateBuffering | SmbCreateOptions.OpenForBackupIntent);
         flags |= pattern switch
         {
@@ -106,9 +110,14 @@ public static class SmbOpenSemantics
             SmbAccessPattern.Random => SmbCreateOptions.RandomAccess,
             _ => 0
         };
-        if (buffering == SmbBufferingMode.Unbuffered) flags |= SmbCreateOptions.NoIntermediateBuffering;
-        if (backupIntent) flags |= SmbCreateOptions.OpenForBackupIntent;
-        var result = options with { CreateOptions = flags };
+        if (buffering == SmbBufferingMode.Unbuffered)
+            flags |= SmbCreateOptions.NoIntermediateBuffering;
+        if (backupIntent)
+            flags |= SmbCreateOptions.OpenForBackupIntent;
+        SmbOpenOptions result = options with
+        {
+            CreateOptions = flags
+        };
         Validate(result);
         return result;
     }

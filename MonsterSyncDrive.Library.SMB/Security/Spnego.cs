@@ -23,7 +23,7 @@
  */
 using System.Formats.Asn1;
 
-namespace MonsterSyncDrive.SMB.Security;
+namespace MonsterSyncDrive.Library.SMB.Security;
 
 /// <summary>使用 DER 编码 SPNEGO NTLM 令牌，并严格解析服务器返回的有界 NegTokenResp 字段。</summary>
 /// <remarks>此辅助类只支持 NTLM 机制；使用 SPNEGO 封装并不代表已经支持 Kerberos。</remarks>
@@ -49,7 +49,11 @@ internal static class Spnego
     /// <summary>创建带显式标记的 ASN.1 构造型上下文标签。</summary>
     /// <param name="value">上下文字段编号。</param>
     /// <returns>用于 SPNEGO 选择项与可选字段的标签。</returns>
-    private static Asn1Tag Context(int value) => new(TagClass.ContextSpecific, value, true);
+    private static Asn1Tag Context(int value)
+    {
+        return new(TagClass.ContextSpecific, value, true);
+    }
+
     /// <summary>NTLMSSP 的 GSS 机制对象标识符。</summary>
     private const string NtlmOid = "1.3.6.1.4.1.311.2.2.10";
 
@@ -58,18 +62,18 @@ internal static class Spnego
     /// <returns>采用 DER 编码的 GSS 初始上下文令牌。</returns>
     internal static byte[] Initial(ReadOnlySpan<byte> token)
     {
-        var writer = new AsnWriter(AsnEncodingRules.DER);
-        var application = new Asn1Tag(TagClass.Application, 0, true);
-        writer.PushSequence(application);
+        AsnWriter writer = new(AsnEncodingRules.DER);
+        Asn1Tag application = new(TagClass.Application, 0, true);
+        _ = writer.PushSequence(application);
         writer.WriteObjectIdentifier("1.3.6.1.5.5.2");
-        writer.PushSequence(Context(0));
-        writer.PushSequence();
-        writer.PushSequence(Context(0));
-        writer.PushSequence();
+        _ = writer.PushSequence(Context(0));
+        _ = writer.PushSequence();
+        _ = writer.PushSequence(Context(0));
+        _ = writer.PushSequence();
         writer.WriteObjectIdentifier(NtlmOid);
         writer.PopSequence();
         writer.PopSequence(Context(0));
-        writer.PushSequence(Context(2));
+        _ = writer.PushSequence(Context(2));
         writer.WriteOctetString(token);
         writer.PopSequence(Context(2));
         writer.PopSequence();
@@ -85,24 +89,24 @@ internal static class Spnego
     /// <returns>采用 DER 编码的上下文专用响应令牌。</returns>
     internal static byte[] Response(ReadOnlySpan<byte> token, ReadOnlySpan<byte> mic = default, State? state = null)
     {
-        var writer = new AsnWriter(AsnEncodingRules.DER);
-        writer.PushSequence(Context(1));
-        writer.PushSequence();
+        AsnWriter writer = new(AsnEncodingRules.DER);
+        _ = writer.PushSequence(Context(1));
+        _ = writer.PushSequence();
         if (state is { } negotiationState)
         {
-            writer.PushSequence(Context(0));
+            _ = writer.PushSequence(Context(0));
             writer.WriteEnumeratedValue(negotiationState);
             writer.PopSequence(Context(0));
         }
         if (!token.IsEmpty)
         {
-            writer.PushSequence(Context(2));
+            _ = writer.PushSequence(Context(2));
             writer.WriteOctetString(token);
             writer.PopSequence(Context(2));
         }
         if (!mic.IsEmpty)
         {
-            writer.PushSequence(Context(3));
+            _ = writer.PushSequence(Context(3));
             writer.WriteOctetString(mic);
             writer.PopSequence(Context(3));
         }
@@ -116,15 +120,17 @@ internal static class Spnego
     /// <returns>认证机制的质询字节。</returns>
     /// <exception cref="SmbProtocolException">未提供 responseToken，或封装结构无效。</exception>
     internal static byte[] Challenge(ReadOnlyMemory<byte> blob)
-        => Parse(blob).ResponseToken ?? throw new SmbProtocolException("The server did not return an NTLM challenge.");
+    {
+        return Parse(blob).ResponseToken ?? throw new SmbProtocolException("The server did not return an NTLM challenge.");
+    }
 
     /// <summary>编码提供给服务器的规范机制列表，作为 SPNEGO MIC 的计算输入。</summary>
     /// <returns>包含 NTLM 机制 OID 的 DER SEQUENCE。</returns>
     /// <remarks>MIC 只覆盖此机制列表，不覆盖整个初始 SPNEGO 封装或 NTLM 消息。</remarks>
     internal static byte[] MechanismList()
     {
-        var writer = new AsnWriter(AsnEncodingRules.DER);
-        writer.PushSequence();
+        AsnWriter writer = new(AsnEncodingRules.DER);
+        _ = writer.PushSequence();
         writer.WriteObjectIdentifier(NtlmOid);
         writer.PopSequence();
         return writer.Encode();
@@ -142,24 +148,24 @@ internal static class Spnego
             return new Token(null, blob.ToArray(), null);
         try
         {
-            var reader = new AsnReader(blob, AsnEncodingRules.BER);
-            var outer = reader.ReadSequence(Context(1));
+            AsnReader reader = new(blob, AsnEncodingRules.BER);
+            AsnReader outer = reader.ReadSequence(Context(1));
             reader.ThrowIfNotEmpty();
-            var fields = outer.ReadSequence();
+            AsnReader fields = outer.ReadSequence();
             outer.ThrowIfNotEmpty();
             byte[]? result = null;
             byte[]? mic = null;
             State? state = null;
             // 重复的可选字段会产生歧义，不能使用首值或末值优先规则解释安全输入。
-            var seen = new HashSet<int>();
+            HashSet<int> seen = [];
             while (fields.HasData)
             {
-                var tag = fields.PeekTag();
+                Asn1Tag tag = fields.PeekTag();
                 if (tag.TagClass != TagClass.ContextSpecific || !seen.Add(tag.TagValue))
                     throw new SmbProtocolException("Invalid or duplicate SPNEGO field.");
                 if (tag.HasSameClassAndValue(Context(0)))
                 {
-                    var stateField = fields.ReadSequence(Context(0));
+                    AsnReader stateField = fields.ReadSequence(Context(0));
                     state = stateField.ReadEnumeratedValue<State>();
                     stateField.ThrowIfNotEmpty();
                     if (!Enum.IsDefined(state.Value) || state == State.Reject)
@@ -167,30 +173,33 @@ internal static class Spnego
                 }
                 else if (tag.HasSameClassAndValue(Context(1)))
                 {
-                    var mechanism = fields.ReadSequence(Context(1));
+                    AsnReader mechanism = fields.ReadSequence(Context(1));
                     if (mechanism.ReadObjectIdentifier() != NtlmOid)
                         throw new SmbProtocolException("The server selected an unsupported authentication mechanism.");
                     mechanism.ThrowIfNotEmpty();
                 }
                 else if (tag.HasSameClassAndValue(Context(2)))
                 {
-                    var response = fields.ReadSequence(Context(2));
+                    AsnReader response = fields.ReadSequence(Context(2));
                     result = response.ReadOctetString();
                     response.ThrowIfNotEmpty();
                 }
                 else if (tag.HasSameClassAndValue(Context(3)))
                 {
-                    var micField = fields.ReadSequence(Context(3));
+                    AsnReader micField = fields.ReadSequence(Context(3));
                     mic = micField.ReadOctetString();
                     micField.ThrowIfNotEmpty();
                     if (mic.Length != 16)
                         throw new SmbProtocolException("Invalid NTLM SPNEGO mechanism-list MIC length.");
                 }
                 else
-                    fields.ReadEncodedValue();
+                    _ = fields.ReadEncodedValue();
             }
             return new Token(state, result, mic);
         }
-        catch (AsnContentException ex) { throw new SmbProtocolException("Invalid SPNEGO token.", ex); }
+        catch (AsnContentException ex)
+        {
+            throw new SmbProtocolException("Invalid SPNEGO token.", ex);
+        }
     }
 }

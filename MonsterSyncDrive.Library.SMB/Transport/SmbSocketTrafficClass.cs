@@ -21,19 +21,19 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using Microsoft.Win32.SafeHandles;
 using System.ComponentModel;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
 
-namespace MonsterSyncDrive.SMB.Transport;
+namespace MonsterSyncDrive.Library.SMB.Transport;
 
 /// <summary>应用操作系统提供的实际 DSCP 配置，并在套接字存活期间保留 Windows QoS 流。</summary>
 internal static class SmbSocketTrafficClass
 {
     /// <summary>在托管套接字存活期间，维持对应原生 qWAVE 句柄的有效性。</summary>
-    private static readonly ConditionalWeakTable<Socket, SafeQosHandle> flows = new();
+    private static readonly ConditionalWeakTable<Socket, SafeQosHandle> flows = [];
 
     /// <summary>通过 Windows QoS2 或 Unix 流量类别套接字选项请求六位 DSCP 值。</summary>
     /// <param name="socket">已经连接的 IPv4 或 IPv6 套接字。</param>
@@ -43,13 +43,18 @@ internal static class SmbSocketTrafficClass
     /// <exception cref="PlatformNotSupportedException">当前平台没有受支持的操作系统配置接口。</exception>
     internal static void Apply(Socket socket, int dscp)
     {
-        if (dscp is < 0 or > 63) throw new ArgumentOutOfRangeException(nameof(dscp));
+        if (dscp is < 0 or > 63)
+            throw new ArgumentOutOfRangeException(nameof(dscp));
         if (OperatingSystem.IsWindows())
         {
             // 当前 Windows 上的 IP_TOS 不能可靠地设置 DSCP，因此使用显式
             // 配置的非自适应 qWAVE 流，并保留权限或策略错误。
-            var version = new QosVersion { Major = 1 };
-            if (!QOSCreateHandle(ref version, out var handle)) throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows QoS initialization failed.");
+            QosVersion version = new()
+            {
+                Major = 1
+            };
+            if (!QOSCreateHandle(ref version, out SafeQosHandle? handle))
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Windows QoS initialization failed.");
             try
             {
                 uint flow = 0;
@@ -62,7 +67,11 @@ internal static class SmbSocketTrafficClass
                 // 包括套接字已经成功连接、但未在竞速中被选中的情况。
                 flows.Add(socket, handle);
             }
-            catch { handle.Dispose(); throw; }
+            catch
+            {
+                handle.Dispose();
+                throw;
+            }
         }
         else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
@@ -74,15 +83,20 @@ internal static class SmbSocketTrafficClass
             if (SetSocketOption(socket.SafeHandle, ipv6 ? 41 : 0, option, ref value, 4) != 0)
                 throw new SocketException(Marshal.GetLastPInvokeError());
         }
-        else throw new PlatformNotSupportedException("This platform does not expose a supported DSCP socket configuration API.");
+        else
+            throw new PlatformNotSupportedException("This platform does not expose a supported DSCP socket configuration API.");
     }
 
     /// <summary>关闭套接字之前释放可能存在的 Windows QoS 流；允许重复调用。</summary>
     /// <param name="tcp">由传输层持有的 TCP 客户端。</param>
     internal static void Dispose(TcpClient tcp)
     {
-        var socket = tcp.Client;
-        if (socket is not null && flows.TryGetValue(socket, out var flow)) { flows.Remove(socket); flow.Dispose(); }
+        Socket? socket = tcp.Client;
+        if (socket is not null && flows.TryGetValue(socket, out SafeQosHandle? flow))
+        {
+            _ = flows.Remove(socket);
+            flow.Dispose();
+        }
         tcp.Dispose();
     }
 
@@ -102,7 +116,10 @@ internal static class SmbSocketTrafficClass
         public SafeQosHandle() : base(true) { }
         /// <summary>释放 qWAVE 资源，避免在安全句柄终结期间抛出异常。</summary>
         /// <returns>原生句柄是否成功关闭。</returns>
-        protected override bool ReleaseHandle() => QOSCloseHandle(handle);
+        protected override bool ReleaseHandle()
+        {
+            return QOSCloseHandle(handle);
+        }
     }
 
     /// <summary>创建指定版本的原生 qWAVE 会话；BOOL 使用显式 Win32 编组。</summary>

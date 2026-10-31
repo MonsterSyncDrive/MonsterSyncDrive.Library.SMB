@@ -21,12 +21,12 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB.Security;
+namespace MonsterSyncDrive.Library.SMB.Security;
 
 
 /// <summary>内部 SMB3 密码套件，值与线上算法标识一致；None 表示不使用加密。</summary>
@@ -84,10 +84,16 @@ internal sealed class SmbCryptography : IDisposable
     private readonly NonceSpace nonceSpace;
 
     /// <summary>该会话采用的 SMB 加密套件。</summary>
-    internal Cipher Cipher { get; }
+    internal Cipher Cipher
+    {
+        get;
+    }
 
     /// <summary>该通道采用的消息签名算法。</summary>
-    internal SigningAlgorithm SigningAlgorithm { get; }
+    internal SigningAlgorithm SigningAlgorithm
+    {
+        get;
+    }
 
 
     /// <summary>创建独立密钥生命周期的会话或通道状态；协议版本决定密钥派生标签，绑定副本保留会话 nonce 分配器。</summary>
@@ -106,7 +112,7 @@ internal sealed class SmbCryptography : IDisposable
         else if (dialect == SmbDialect.Smb311)
         {
             signingKey = DeriveKey(sessionKey, "SMBSigningKey", preauthHash, 16);
-            var keyLength = cipher is Cipher.Aes256Ccm or Cipher.Aes256Gcm ? 32 : 16;
+            int keyLength = cipher is Cipher.Aes256Ccm or Cipher.Aes256Gcm ? 32 : 16;
             encryptionKey = DeriveKey(sessionKey, "SMBC2SCipherKey", preauthHash, keyLength);
             decryptionKey = DeriveKey(sessionKey, "SMBS2CCipherKey", preauthHash, keyLength);
         }
@@ -123,13 +129,20 @@ internal sealed class SmbCryptography : IDisposable
     private SmbCryptography(byte[] signing, byte[] encryption, byte[] decryption,
         NonceSpace nonces, Cipher cipher, SigningAlgorithm algorithm)
     {
-        signingKey = signing; encryptionKey = encryption; decryptionKey = decryption;
-        nonceSpace = nonces; Cipher = cipher; SigningAlgorithm = algorithm;
+        signingKey = signing;
+        encryptionKey = encryption;
+        decryptionKey = decryption;
+        nonceSpace = nonces;
+        Cipher = cipher;
+        SigningAlgorithm = algorithm;
     }
 
     /// <summary>复制会话密钥并使副本拥有独立清零生命周期，同时共享会话级加密 nonce 序号。</summary>
-    internal SmbCryptography CloneForBinding() => new(signingKey.ToArray(), encryptionKey.ToArray(),
+    internal SmbCryptography CloneForBinding()
+    {
+        return new(signingKey.ToArray(), encryptionKey.ToArray(),
         decryptionKey.ToArray(), nonceSpace, Cipher, SigningAlgorithm);
+    }
 
     /// <summary>从绑定认证密钥派生通道签名密钥，仍保留原逻辑会话的方向加密密钥和 nonce 空间。</summary>
     internal SmbCryptography CreateChannel(ReadOnlySpan<byte> bindingSessionKey, SmbDialect dialect,
@@ -137,7 +150,7 @@ internal sealed class SmbCryptography : IDisposable
     {
         if (dialect < SmbDialect.Smb300 || cipher != Cipher)
             throw new SmbProtocolException("A bound channel must preserve its SMB3 session encryption cipher.");
-        using var channel = new SmbCryptography(bindingSessionKey, dialect, cipher, algorithm, bindingPreauth);
+        using SmbCryptography channel = new(bindingSessionKey, dialect, cipher, algorithm, bindingPreauth);
         return new SmbCryptography(channel.signingKey.ToArray(), encryptionKey.ToArray(), decryptionKey.ToArray(),
             nonceSpace, cipher, algorithm);
     }
@@ -150,14 +163,14 @@ internal sealed class SmbCryptography : IDisposable
     /// <param name="length">输出字节数，本实现使用 16 或 32。</param>
     internal static byte[] DeriveKey(ReadOnlySpan<byte> key, string label, ReadOnlySpan<byte> context, int length)
     {
-        var labelBytes = Encoding.ASCII.GetBytes(label + "\0");
-        var input = new byte[4 + labelBytes.Length + 1 + context.Length + 4];
+        byte[] labelBytes = Encoding.ASCII.GetBytes(label + "\0");
+        byte[] input = new byte[4 + labelBytes.Length + 1 + context.Length + 4];
         BinaryPrimitives.WriteUInt32BigEndian(input, 1);
         labelBytes.CopyTo(input, 4);
         context.CopyTo(input.AsSpan(5 + labelBytes.Length));
         BinaryPrimitives.WriteUInt32BigEndian(input.AsSpan(input.Length - 4), checked((uint)length * 8));
-        var result = HMACSHA256.HashData(key, input);
-        var derived = result[..length];
+        byte[] result = HMACSHA256.HashData(key, input);
+        byte[] derived = result[..length];
         CryptographicOperations.ZeroMemory(result);
         return derived;
     }
@@ -166,7 +179,7 @@ internal sealed class SmbCryptography : IDisposable
     /// <summary>计算 SHA-512(previousHash || SMBMessage)，由会话层按顺序纳入协商、认证及中间回复。</summary>
     internal static byte[] PreauthHash(ReadOnlySpan<byte> previous, ReadOnlySpan<byte> packet)
     {
-        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA512);
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA512);
         hash.AppendData(previous);
         hash.AppendData(packet);
         return hash.GetHashAndReset();
@@ -191,11 +204,17 @@ internal sealed class SmbCryptography : IDisposable
                 throw new SmbProtocolException("The server omitted a required SMB signature.");
             return;
         }
-        var actual = packet.AsSpan(48, 16).ToArray();
+        byte[] actual = packet.AsSpan(48, 16).ToArray();
         packet.AsSpan(48, 16).Clear();
         byte[] expected;
-        try { expected = ComputeSignature(packet); }
-        finally { actual.CopyTo(packet, 48); }
+        try
+        {
+            expected = ComputeSignature(packet);
+        }
+        finally
+        {
+            actual.CopyTo(packet, 48);
+        }
         if (!CryptographicOperations.FixedTimeEquals(actual, expected))
             throw new SmbProtocolException("SMB signature verification failed.");
     }
@@ -214,8 +233,8 @@ internal sealed class SmbCryptography : IDisposable
         nonce[8] = (byte)((Wire.U32(packet, 16) & Wire.ServerToClient) != 0 ? 1 : 0);
         if (Wire.U16(packet, 12) == (ushort)Command.Cancel)
             nonce[8] |= 2;
-        var tag = new byte[16];
-        using var gcm = new AesGcm(signingKey, 16);
+        byte[] tag = new byte[16];
+        using AesGcm gcm = new(signingKey, 16);
         gcm.Encrypt(nonce, [], [], tag, packet);
         return tag;
     }
@@ -224,35 +243,35 @@ internal sealed class SmbCryptography : IDisposable
     /// <summary>实现 AES-CMAC 子密钥和最后一块处理，避免引入非微软加密依赖。</summary>
     internal static byte[] Cmac(ReadOnlySpan<byte> key, ReadOnlySpan<byte> message)
     {
-        using var aes = Aes.Create();
+        using Aes aes = Aes.Create();
         aes.Key = key.ToArray();
         Span<byte> zero = stackalloc byte[16];
         zero.Clear();
         Span<byte> subkey = stackalloc byte[16];
-        aes.EncryptEcb(zero, subkey, PaddingMode.None);
+        _ = aes.EncryptEcb(zero, subkey, PaddingMode.None);
         Double(subkey);
-        var complete = message.Length > 0 && message.Length % 16 == 0;
+        bool complete = message.Length > 0 && message.Length % 16 == 0;
         if (!complete)
             Double(subkey);
         Span<byte> state = stackalloc byte[16];
         state.Clear();
-        var blocks = Math.Max(1, (message.Length + 15) / 16);
+        int blocks = Math.Max(1, (message.Length + 15) / 16);
         Span<byte> block = stackalloc byte[16];
-        for (var i = 0; i < blocks; i++)
+        for (int i = 0; i < blocks; i++)
         {
             block.Clear();
-            var length = Math.Min(16, message.Length - i * 16);
+            int length = Math.Min(16, message.Length - (i * 16));
             message.Slice(i * 16, length).CopyTo(block);
             if (i == blocks - 1)
             {
                 if (!complete)
                     block[length] = 0x80;
-                for (var j = 0; j < 16; j++)
+                for (int j = 0; j < 16; j++)
                     block[j] ^= subkey[j];
             }
-            for (var j = 0; j < 16; j++)
+            for (int j = 0; j < 16; j++)
                 block[j] ^= state[j];
-            aes.EncryptEcb(block, state, PaddingMode.None);
+            _ = aes.EncryptEcb(block, state, PaddingMode.None);
         }
         return state.ToArray();
     }
@@ -261,8 +280,8 @@ internal sealed class SmbCryptography : IDisposable
     /// <summary>在 GF(2^128) 中左移倍乘 CMAC 子密钥，最高位溢出时以 0x87 约简。</summary>
     private static void Double(Span<byte> block)
     {
-        var carry = (block[0] & 0x80) != 0;
-        for (var i = 0; i < 15; i++)
+        bool carry = (block[0] & 0x80) != 0;
+        for (int i = 0; i < 15; i++)
             block[i] = (byte)((block[i] << 1) | (block[i + 1] >> 7));
         block[15] <<= 1;
         if (carry)
@@ -275,12 +294,15 @@ internal sealed class SmbCryptography : IDisposable
     {
         if (Cipher == Cipher.None)
             throw new SmbProtocolException("SMB encryption was not negotiated.");
-        var result = new byte[52 + packet.Length];
-        result[0] = 0xFD; result[1] = 0x53; result[2] = 0x4D; result[3] = 0x42;
-        var ccm = Cipher is Cipher.Aes128Ccm or Cipher.Aes256Ccm;
-        var nonceLength = ccm ? 11 : 12;
+        byte[] result = new byte[52 + packet.Length];
+        result[0] = 0xFD;
+        result[1] = 0x53;
+        result[2] = 0x4D;
+        result[3] = 0x42;
+        bool ccm = Cipher is Cipher.Aes128Ccm or Cipher.Aes256Ccm;
+        int nonceLength = ccm ? 11 : 12;
         nonceSpace.Prefix.AsSpan(0, nonceLength - 8).CopyTo(result.AsSpan(20));
-        var counter = Interlocked.Increment(ref nonceSpace.Counter);
+        long counter = Interlocked.Increment(ref nonceSpace.Counter);
         if (counter <= 0)
             throw new SmbProtocolException("The SMB encryption nonce space was exhausted; reconnect.");
         BinaryPrimitives.WriteInt64BigEndian(result.AsSpan(20 + nonceLength - 8), counter);
@@ -300,18 +322,18 @@ internal sealed class SmbCryptography : IDisposable
             Wire.U16(packet, 40) != 0 || Wire.U16(packet, 42) != 1 || Wire.U64(packet, 44) != sessionId ||
             Wire.U32(packet, 36) != packet.Length - 52 || Cipher == Cipher.None)
             throw new SmbProtocolException("Invalid SMB encryption transform.");
-        var plaintext = new byte[packet.Length - 52];
-        var ccm = Cipher is Cipher.Aes128Ccm or Cipher.Aes256Ccm;
+        byte[] plaintext = new byte[packet.Length - 52];
+        bool ccm = Cipher is Cipher.Aes128Ccm or Cipher.Aes256Ccm;
         try
         {
             if (ccm)
             {
-                using var aes = new AesCcm(decryptionKey);
+                using AesCcm aes = new(decryptionKey);
                 aes.Decrypt(packet.Slice(20, 11), packet[52..], packet.Slice(4, 16), plaintext, packet.Slice(20, 32));
             }
             else
             {
-                using var aes = new AesGcm(decryptionKey, 16);
+                using AesGcm aes = new(decryptionKey, 16);
                 aes.Decrypt(packet.Slice(20, 12), packet[52..], packet.Slice(4, 16), plaintext, packet.Slice(20, 32));
             }
         }
@@ -330,12 +352,12 @@ internal sealed class SmbCryptography : IDisposable
     {
         if (ccm)
         {
-            using var aes = new AesCcm(key);
+            using AesCcm aes = new(key);
             aes.Encrypt(nonce, plaintext, ciphertext, tag, aad);
         }
         else
         {
-            using var aes = new AesGcm(key, 16);
+            using AesGcm aes = new(key, 16);
             aes.Encrypt(nonce, plaintext, ciphertext, tag, aad);
         }
     }

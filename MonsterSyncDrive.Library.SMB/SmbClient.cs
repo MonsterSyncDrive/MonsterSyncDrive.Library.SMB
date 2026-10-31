@@ -21,13 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
+using MonsterSyncDrive.Library.SMB.Protocol.Compression;
+using MonsterSyncDrive.Library.SMB.Security;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
-using MonsterSyncDrive.SMB.Protocol;
-using MonsterSyncDrive.SMB.Security;
-using MonsterSyncDrive.SMB.Protocol.Compression;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>已认证的 SMB2/SMB3 会话，可选使用多个绑定传输通道并发处理请求。</summary>
 public sealed partial class SmbClient : IAsyncDisposable
@@ -72,7 +72,10 @@ public sealed partial class SmbClient : IAsyncDisposable
     /// <summary>通过原子操作设置的释放标志，禁止在释放期间创建新资源。</summary>
     private int disposed;
     /// <summary>连接前复制和验证的客户端选项，所有通道复用其安全策略。</summary>
-    internal SmbClientOptions Options { get; }
+    internal SmbClientOptions Options
+    {
+        get;
+    }
     /// <summary>实际协商结果；有多个通道时传输上限取所有已绑定通道的保守最小值。</summary>
     public SmbConnectionInfo ConnectionInfo { get; private set; } = null!;
     /// <summary>客户端未释放且至少有一个绑定通道仍然连接。</summary>
@@ -102,14 +105,14 @@ public sealed partial class SmbClient : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(credential);
-        var validated = options.Validate();
-        var connection = await SmbConnection.ConnectAsync(validated, cancellationToken).ConfigureAwait(false);
-        var client = new SmbClient(connection, validated);
+        SmbClientOptions validated = options.Validate();
+        SmbConnection connection = await SmbConnection.ConnectAsync(validated, cancellationToken).ConfigureAwait(false);
+        SmbClient client = new(connection, validated);
         try
         {
             await client.EstablishSessionAsync(credential, cancellationToken).ConfigureAwait(false);
             if (validated.Multichannel.Enabled && validated.Multichannel.AutoConnect && client.MultichannelSupported)
-                await client.ConnectAdditionalChannelsAsync(credential, cancellationToken: cancellationToken).ConfigureAwait(false);
+                _ = await client.ConnectAdditionalChannelsAsync(credential, cancellationToken: cancellationToken).ConfigureAwait(false);
             return client;
         }
         catch (Exception error)
@@ -129,11 +132,11 @@ public sealed partial class SmbClient : IAsyncDisposable
     private async Task EstablishSessionAsync(SmbCredential credential, CancellationToken cancellationToken,
         SmbConnection? targetConnection = null, SmbClientOptions? endpointOptions = null)
     {
-        var connection = targetConnection ?? this.connection;
+        SmbConnection connection = targetConnection ?? this.connection;
         var binding = targetConnection is not null;
         if (binding)
             connection.ServerRequiresEncryption = this.connection.ServerRequiresEncryption;
-        var transportKind = (endpointOptions ?? Options).Transport.Kind;
+        SmbTransportKind transportKind = (endpointOptions ?? Options).Transport.Kind;
         SmbDialect[] dialects = binding ? [ConnectionInfo.Dialect] :
             new[] { SmbDialect.Smb202, SmbDialect.Smb210, SmbDialect.Smb300, SmbDialect.Smb302, SmbDialect.Smb311 }
             .Where(dialect => dialect >= Options.MinimumDialect && dialect <= Options.MaximumDialect).ToArray();
@@ -146,7 +149,7 @@ public sealed partial class SmbClient : IAsyncDisposable
         }).ToArray();
         if (dialects.Length == 0)
             throw new NotSupportedException("The configured dialect range cannot be used over this SMB transport.");
-        var ciphers = new List<Cipher>();
+        List<Cipher> ciphers = new();
         if (AesGcm.IsSupported)
             ciphers.AddRange([Cipher.Aes128Gcm, Cipher.Aes256Gcm]);
         if (AesCcm.IsSupported)
@@ -157,7 +160,7 @@ public sealed partial class SmbClient : IAsyncDisposable
             if (ciphers.Count == 0 && dialects.Contains(SmbDialect.Smb311) && Options.Encryption != SmbEncryptionPolicy.Disabled)
                 throw new PlatformNotSupportedException("The platform cannot use any of the requested SMB encryption ciphers.");
         }
-        var signingAlgorithms = AesGcm.IsSupported
+        SigningAlgorithm[] signingAlgorithms = AesGcm.IsSupported
             ? new[] { SigningAlgorithm.AesCmac, SigningAlgorithm.AesGmac, SigningAlgorithm.HmacSha256 }
             : [SigningAlgorithm.AesCmac, SigningAlgorithm.HmacSha256];
         if (Options.SigningAlgorithms is { } signingOffer)
@@ -180,11 +183,11 @@ public sealed partial class SmbClient : IAsyncDisposable
             clientCapabilities |= 8;
         var compressionAllowed = transportKind != SmbTransportKind.Rdma;
         var request = BuildNegotiate(dialects, ciphers, signingAlgorithms, clientCapabilities, compressionAllowed);
-        var negotiate = await connection.SendAsync(Command.Negotiate, request, 0, cancellationToken).ConfigureAwait(false);
+        Response negotiate = await connection.SendAsync(Command.Negotiate, request, 0, cancellationToken).ConfigureAwait(false);
         negotiate.EnsureSuccess();
         Wire.Structure(negotiate.Packet, 65, 64);
         var packet = negotiate.Packet;
-        var dialect = (SmbDialect)Wire.U16(packet, 68);
+        SmbDialect dialect = (SmbDialect)Wire.U16(packet, 68);
         if (!dialects.Contains(dialect))
             throw new SmbProtocolException("The server selected a dialect that was not offered.");
         var securityMode = Wire.U16(packet, 66);
@@ -205,15 +208,15 @@ public sealed partial class SmbClient : IAsyncDisposable
             serverSecurityMode = securityMode;
             serverCapabilities = capabilities;
         }
-        if (!binding && dialect is (SmbDialect.Smb300 or SmbDialect.Smb302))
+        if (!binding && dialect is SmbDialect.Smb300 or SmbDialect.Smb302)
         {
-            validateNegotiateInput = new byte[24 + dialects.Length * 2];
+            validateNegotiateInput = new byte[24 + (dialects.Length * 2)];
             Wire.Put32(validateNegotiateInput, 0, clientCapabilities);
-            Options.ClientGuid.TryWriteBytes(validateNegotiateInput.AsSpan(4, 16));
+            _ = Options.ClientGuid.TryWriteBytes(validateNegotiateInput.AsSpan(4, 16));
             Wire.Put16(validateNegotiateInput, 20, (ushort)(Options.Signing == SmbSigningMode.Required ? 3 : 1));
             Wire.Put16(validateNegotiateInput, 22, (ushort)dialects.Length);
             for (var i = 0; i < dialects.Length; i++)
-                Wire.Put16(validateNegotiateInput, 24 + i * 2, (ushort)dialects[i]);
+                Wire.Put16(validateNegotiateInput, 24 + (i * 2), (ushort)dialects[i]);
             validateNegotiateExpected = new byte[24];
             Wire.Put32(validateNegotiateExpected, 0, capabilities);
             packet.AsSpan(72, 16).CopyTo(validateNegotiateExpected.AsSpan(4));
@@ -223,8 +226,8 @@ public sealed partial class SmbClient : IAsyncDisposable
         var maxTransaction = ValidateMaximum(Wire.U32(packet, 92));
         var maxRead = ValidateMaximum(Wire.U32(packet, 96));
         var maxWrite = ValidateMaximum(Wire.U32(packet, 100));
-        var cipher = dialect >= SmbDialect.Smb300 && (capabilities & 0x40) != 0 ? Cipher.Aes128Ccm : Cipher.None;
-        var algorithm = dialect >= SmbDialect.Smb300 ? SigningAlgorithm.AesCmac : SigningAlgorithm.HmacSha256;
+        Cipher cipher = dialect >= SmbDialect.Smb300 && (capabilities & 0x40) != 0 ? Cipher.Aes128Ccm : Cipher.None;
+        SigningAlgorithm algorithm = dialect >= SmbDialect.Smb300 ? SigningAlgorithm.AesCmac : SigningAlgorithm.HmacSha256;
         SmbCompression? compression = null;
         if (dialect == SmbDialect.Smb311)
             ParseContexts(packet, ciphers, signingAlgorithms, out cipher, out algorithm, out compression, compressionAllowed);
@@ -250,7 +253,7 @@ public sealed partial class SmbClient : IAsyncDisposable
             connection.Authenticate(bindingSigner, true, false);
         }
         var ntlmNegotiate = NtlmV2.Negotiate();
-        var first = await connection.SendAsync(Command.SessionSetup, SessionSetup(Spnego.Initial(ntlmNegotiate), binding),
+        Response first = await connection.SendAsync(Command.SessionSetup, SessionSetup(Spnego.Initial(ntlmNegotiate), binding),
             0, cancellationToken).ConfigureAwait(false);
         if (binding)
             bindingSigner!.Verify(first.Packet, true);
@@ -264,14 +267,14 @@ public sealed partial class SmbClient : IAsyncDisposable
         preauth = SmbCryptography.PreauthHash(preauth, first.Packet);
         connection.SessionId = first.SessionId;
         var challengeBlob = Wire.Buffer(first.Packet, Wire.U16(first.Packet, 68), Wire.U16(first.Packet, 70), 72);
-        var challengeToken = Spnego.Parse(challengeBlob);
+        Spnego.Token challengeToken = Spnego.Parse(challengeBlob);
         var challenge = challengeToken.ResponseToken ?? throw new SmbProtocolException("The server did not return an NTLM challenge.");
-        var ntlm = NtlmV2.Authenticate(credential, Host, ntlmNegotiate, challenge);
+        NtlmResult ntlm = NtlmV2.Authenticate(credential, Host, ntlmNegotiate, challenge);
         try
         {
             var micSent = challengeToken.NegotiationState == Spnego.State.RequestMic;
             var outgoingMic = micSent ? NtlmV2.MechanismListMic(ntlm.SessionKey, false) : [];
-            var final = await connection.SendAsync(Command.SessionSetup, SessionSetup(Spnego.Response(ntlm.AuthenticateMessage, outgoingMic), binding),
+            Response final = await connection.SendAsync(Command.SessionSetup, SessionSetup(Spnego.Response(ntlm.AuthenticateMessage, outgoingMic), binding),
                 0, cancellationToken).ConfigureAwait(false);
             for (var round = 0; ; round++)
             {
@@ -283,7 +286,7 @@ public sealed partial class SmbClient : IAsyncDisposable
                     throw new SmbProtocolException("The server changed the session ID during authentication.");
                 preauth = SmbCryptography.PreauthHash(preauth, final.Request);
                 var securityBlob = Wire.Buffer(final.Packet, Wire.U16(final.Packet, 68), Wire.U16(final.Packet, 70), 72);
-                var token = securityBlob.Length == 0 ? new Spnego.Token(null, null, null) : Spnego.Parse(securityBlob);
+                Spnego.Token token = securityBlob.Length == 0 ? new Spnego.Token(null, null, null) : Spnego.Parse(securityBlob);
                 if (token.MechanismListMic is { } serverMic &&
                     !CryptographicOperations.FixedTimeEquals(serverMic, NtlmV2.MechanismListMic(ntlm.SessionKey, true)))
                     throw new SmbProtocolException("The SPNEGO server mechanism-list MIC is invalid.");
@@ -313,7 +316,7 @@ public sealed partial class SmbClient : IAsyncDisposable
                 throw new SmbProtocolException("The server returned a guest/anonymous session incompatible with the client policy.");
             if (credential.IsAnonymous && !anonymous && !guest)
                 throw new SmbProtocolException("An anonymous login unexpectedly returned an authenticated session.");
-            var encrypt = !guest && !anonymous && (Options.Encryption != SmbEncryptionPolicy.Disabled && encryptionSupported);
+            var encrypt = !guest && !anonymous && Options.Encryption != SmbEncryptionPolicy.Disabled && encryptionSupported;
             if (binding)
                 encrypt = ConnectionInfo.IsEncrypted; // 绑定回复不能更改已经建立的会话加密策略。
             else if ((sessionFlags & 4) != 0)
@@ -323,7 +326,7 @@ public sealed partial class SmbClient : IAsyncDisposable
                 encrypt = true;
             }
             // 依照 MS-SMB2 3.2.5.3.1，成功的 SESSION_SETUP 回复不计入派生密钥所用的预认证上下文。
-            var crypto = binding
+            SmbCryptography crypto = binding
                 ? sessionCryptography!.CreateChannel(ntlm.SessionKey, dialect, cipher, algorithm, preauth)
                 : new SmbCryptography(ntlm.SessionKey, dialect, cipher, algorithm, preauth);
             try
@@ -336,7 +339,11 @@ public sealed partial class SmbClient : IAsyncDisposable
                 if (!binding)
                     sessionCryptography = crypto.CloneForBinding();
             }
-            catch { crypto.Dispose(); throw; }
+            catch
+            {
+                crypto.Dispose();
+                throw;
+            }
             ConnectionInfo = binding ? ConnectionInfo with
             {
                 MaxReadSize = Math.Min(ConnectionInfo.MaxReadSize, maxRead),
@@ -365,9 +372,9 @@ public sealed partial class SmbClient : IAsyncDisposable
     /// <returns>客户端能够使用的有效最大长度。</returns>
     private int ValidateMaximum(uint size)
     {
-        if (size < 65536)
-            throw new SmbProtocolException("The server advertised an invalid maximum SMB transfer size.");
-        return checked((int)Math.Min(size, (uint)Options.MaximumPacketSize - 256));
+        return size < 65536
+            ? throw new SmbProtocolException("The server advertised an invalid maximum SMB transfer size.")
+            : checked((int)Math.Min(size, (uint)Options.MaximumPacketSize - 256));
     }
 
     /// <summary>按八字节对齐编码版本列表及明确支持的 SMB 3.1.1 协商上下文。</summary>
@@ -379,31 +386,33 @@ public sealed partial class SmbClient : IAsyncDisposable
     /// <returns>不含 SMB2 头的 NEGOTIATE 请求体。</returns>
     private byte[] BuildNegotiate(SmbDialect[] dialects, List<Cipher> ciphers, SigningAlgorithm[] signingAlgorithms, uint capabilities, bool compressionAllowed)
     {
-        var contexts = new List<(ushort Type, byte[] Data)>();
+        List<(ushort Type, byte[] Data)> contexts = new();
         if (dialects.Contains(SmbDialect.Smb311))
         {
             var preauth = new byte[38];
-            Wire.Put16(preauth, 0, 1); Wire.Put16(preauth, 2, 32); Wire.Put16(preauth, 4, 1);
+            Wire.Put16(preauth, 0, 1);
+            Wire.Put16(preauth, 2, 32);
+            Wire.Put16(preauth, 4, 1);
             RandomNumberGenerator.Fill(preauth.AsSpan(6));
             contexts.Add((1, preauth));
             if (ciphers.Count > 0)
             {
-                var encryption = new byte[2 + ciphers.Count * 2];
+                var encryption = new byte[2 + (ciphers.Count * 2)];
                 Wire.Put16(encryption, 0, (ushort)ciphers.Count);
                 for (var i = 0; i < ciphers.Count; i++)
-                    Wire.Put16(encryption, 2 + i * 2, (ushort)ciphers[i]);
+                    Wire.Put16(encryption, 2 + (i * 2), (ushort)ciphers[i]);
                 contexts.Add((2, encryption));
             }
-            var signing = new byte[2 + signingAlgorithms.Length * 2];
+            var signing = new byte[2 + (signingAlgorithms.Length * 2)];
             Wire.Put16(signing, 0, (ushort)signingAlgorithms.Length);
             for (var i = 0; i < signingAlgorithms.Length; i++)
-                Wire.Put16(signing, 2 + i * 2, (ushort)signingAlgorithms[i]);
+                Wire.Put16(signing, 2 + (i * 2), (ushort)signingAlgorithms[i]);
             contexts.Add((8, signing));
             contexts.Add((5, Wire.Unicode.GetBytes(Host)));
             if (Options.Compression.Enabled && compressionAllowed)
                 contexts.Add((3, SmbCompression.BuildNegotiateContext(Options.Compression)));
         }
-        var dialectEnd = 36 + dialects.Length * 2;
+        var dialectEnd = 36 + (dialects.Length * 2);
         var contextStart = Wire.Align8(64 + dialectEnd) - 64;
         var bodyLength = contexts.Count == 0 ? dialectEnd : contextStart + contexts.Sum(context => Wire.Align8(8 + context.Data.Length));
         var body = new byte[bodyLength];
@@ -411,16 +420,16 @@ public sealed partial class SmbClient : IAsyncDisposable
         Wire.Put16(body, 2, (ushort)dialects.Length);
         Wire.Put16(body, 4, (ushort)(Options.Signing == SmbSigningMode.Required ? 3 : 1));
         Wire.Put32(body, 8, dialects.Any(value => value >= SmbDialect.Smb300) ? capabilities : 0);
-        Options.ClientGuid.TryWriteBytes(body.AsSpan(12, 16));
+        _ = Options.ClientGuid.TryWriteBytes(body.AsSpan(12, 16));
         if (contexts.Count > 0)
         {
             Wire.Put32(body, 28, (uint)contextStart + 64);
             Wire.Put16(body, 32, (ushort)contexts.Count);
         }
         for (var i = 0; i < dialects.Length; i++)
-            Wire.Put16(body, 36 + i * 2, (ushort)dialects[i]);
+            Wire.Put16(body, 36 + (i * 2), (ushort)dialects[i]);
         var offset = contextStart;
-        foreach (var (type, data) in contexts)
+        foreach ((ushort type, byte[]? data) in contexts)
         {
             Wire.Put16(body, offset, type);
             Wire.Put16(body, offset + 2, (ushort)data.Length);
@@ -446,7 +455,7 @@ public sealed partial class SmbClient : IAsyncDisposable
         compression = null;
         var count = Wire.U16(packet, 70);
         var position = Wire.U32(packet, 124);
-        var seen = new HashSet<ushort>();
+        HashSet<ushort> seen = new();
         if (count == 0 || position < 128 || position % 8 != 0)
             throw new SmbProtocolException("SMB 3.1.1 requires aligned negotiate contexts.");
         for (var i = 0; i < count; i++)
@@ -456,7 +465,7 @@ public sealed partial class SmbClient : IAsyncDisposable
             var offset = (int)position;
             var type = Wire.U16(packet, offset);
             var length = Wire.U16(packet, offset + 2);
-            var data = Wire.Slice(packet, offset + 8, length);
+            ReadOnlySpan<byte> data = Wire.Slice(packet, offset + 8, length);
             if (!seen.Add(type))
                 throw new SmbProtocolException("Duplicate SMB negotiate context.");
             if (type == 1)
@@ -511,21 +520,24 @@ public sealed partial class SmbClient : IAsyncDisposable
     public async Task<SmbShare> ConnectShareAsync(string shareName, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        SmbPath.ValidateShare(shareName);
+        _ = SmbPath.ValidateShare(shareName);
         await treeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
-            if (trees.TryGetValue(shareName, out var tree))
+            if (trees.TryGetValue(shareName, out TreeState? tree))
             {
-                var lease = new SmbShare(this, tree.Id, shareName, tree.Type, tree.Flags, tree.Capabilities, tree.MaximumAccess);
+                SmbShare lease = new(this, tree.Id, shareName, tree.Type, tree.Flags, tree.Capabilities, tree.MaximumAccess);
                 tree.References++;
-                shares.TryAdd(lease, 0);
+                _ = shares.TryAdd(lease, 0);
                 return lease;
             }
             return await ConnectNewTreeAsync(shareName, cancellationToken).ConfigureAwait(false);
         }
-        finally { treeGate.Release(); }
+        finally
+        {
+            _ = treeGate.Release();
+        }
     }
 
     /// <summary>创建服务器树连接，验证其加密要求和树标识唯一性后登记引用。</summary>
@@ -540,10 +552,10 @@ public sealed partial class SmbClient : IAsyncDisposable
         Wire.Put16(body, 4, 72);
         Wire.Put16(body, 6, checked((ushort)path.Length));
         path.CopyTo(body, 8);
-        var response = await SendAsync(Command.TreeConnect, body, 0, cancellationToken).ConfigureAwait(false);
+        Response response = await SendAsync(Command.TreeConnect, body, 0, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccess();
         Wire.Structure(response.Packet, 16, 16);
-        var share = new SmbShare(this, response.TreeId, shareName, response.Packet[66],
+        SmbShare share = new(this, response.TreeId, shareName, response.Packet[66],
             Wire.U32(response.Packet, 68), Wire.U32(response.Packet, 72), (SmbAccessMask)Wire.U32(response.Packet, 76));
         if (share.EncryptionRequired && (!ConnectionInfo.EncryptionSupported || Options.Encryption == SmbEncryptionPolicy.Disabled ||
             ConnectionInfo.IsGuest || ConnectionInfo.IsAnonymous))
@@ -556,15 +568,20 @@ public sealed partial class SmbClient : IAsyncDisposable
             connection.Abort(new SmbProtocolException("The server reused a live SMB tree ID."));
             throw new SmbProtocolException("The server reused a live SMB tree ID.");
         }
-        try { await ValidateNegotiateAsync(share, cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            await ValidateNegotiateAsync(share, cancellationToken).ConfigureAwait(false);
+        }
         catch (Exception ex)
         {
             connection.Abort(ex);
             throw;
         }
         trees.Add(shareName, new TreeState(response.TreeId, share.ShareType, share.Flags, share.Capabilities, share.MaximumAccess)
-        { References = 1 });
-        shares.TryAdd(share, 0);
+        {
+            References = 1
+        });
+        _ = shares.TryAdd(share, 0);
         return share;
     }
 
@@ -589,7 +606,7 @@ public sealed partial class SmbClient : IAsyncDisposable
             Wire.Put32(body, 44, 24);
             Wire.Put32(body, 48, 1);
             validateNegotiateInput.CopyTo(body, 56);
-            var response = await share.SendAsync(Command.Ioctl, body, cancellationToken, 24).ConfigureAwait(false);
+            Response response = await share.SendAsync(Command.Ioctl, body, cancellationToken, 24).ConfigureAwait(false);
             // MS-SMB2 允许较早的实现返回已经签名的 STATUS_NOT_SUPPORTED；仍须验证回复完整性。
             response.EnsureSuccess(SmbStatus.NotSupported);
             if (response.Status == SmbStatus.Success)
@@ -602,7 +619,10 @@ public sealed partial class SmbClient : IAsyncDisposable
             }
             negotiateValidated = true;
         }
-        finally { negotiateValidation.Release(); }
+        finally
+        {
+            _ = negotiateValidation.Release();
+        }
     }
 
     /// <summary>通过 srvsvc 命名管道上的 RPC 枚举共享资源，自动处理分片和续页。</summary>
@@ -611,8 +631,8 @@ public sealed partial class SmbClient : IAsyncDisposable
     public async Task<IReadOnlyList<SmbShareInfo>> ListSharesAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        await using var ipc = await ConnectShareAsync("IPC$", cancellationToken).ConfigureAwait(false);
-        await using var pipe = await ipc.OpenFileAsync("srvsvc", new SmbOpenOptions
+        await using SmbShare ipc = await ConnectShareAsync("IPC$", cancellationToken).ConfigureAwait(false);
+        await using SmbFileHandle pipe = await ipc.OpenFileAsync("srvsvc", new SmbOpenOptions
         {
             Access = SmbAccessMask.GenericRead | SmbAccessMask.GenericWrite,
             CreateOptions = SmbCreateOptions.NonDirectoryFile
@@ -625,7 +645,7 @@ public sealed partial class SmbClient : IAsyncDisposable
     public async Task EchoAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        var response = await SendAsync(Command.Echo, new byte[] { 4, 0, 0, 0 }, 0, cancellationToken).ConfigureAwait(false);
+        Response response = await SendAsync(Command.Echo, new byte[] { 4, 0, 0, 0 }, 0, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccess();
         Wire.Structure(response.Packet, 4, 4);
     }
@@ -641,7 +661,9 @@ public sealed partial class SmbClient : IAsyncDisposable
     /// <returns>与此请求标识匹配的回复。</returns>
     internal Task<Response> SendAsync(Command command, ReadOnlyMemory<byte> body, uint treeId,
         CancellationToken cancellationToken, int maximumResponse = 0, bool encrypt = false, bool infiniteTimeout = false)
-        => SelectChannel().SendAsync(command, body, treeId, cancellationToken, maximumResponse, encrypt, infiniteTimeout);
+    {
+        return SelectChannel().SendAsync(command, body, treeId, cancellationToken, maximumResponse, encrypt, infiniteTimeout);
+    }
 
     /// <summary>撤销本地共享引用，并在最后一个引用释放时断开服务器树。</summary>
     /// <param name="share">正在释放的共享使用对象。</param>
@@ -650,27 +672,33 @@ public sealed partial class SmbClient : IAsyncDisposable
         await treeGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            shares.TryRemove(share, out _);
-            if (!trees.TryGetValue(share.Name, out var tree) || --tree.References != 0)
+            _ = shares.TryRemove(share, out _);
+            if (!trees.TryGetValue(share.Name, out TreeState? tree) || --tree.References != 0)
                 return;
-            trees.Remove(share.Name);
+            _ = trees.Remove(share.Name);
             if (!HasLiveChannel)
                 return;
-            var response = await SendAsync(Command.TreeDisconnect, new byte[] { 4, 0, 0, 0 },
+            Response response = await SendAsync(Command.TreeDisconnect, new byte[] { 4, 0, 0, 0 },
                 tree.Id, CancellationToken.None, encrypt: share.EncryptionRequired).ConfigureAwait(false);
             response.EnsureSuccess();
         }
-        finally { treeGate.Release(); }
+        finally
+        {
+            _ = treeGate.Release();
+        }
     }
     /// <summary>因会话级协议错误终止所有通道，使全部未完成请求收到同一失败原因。</summary>
     /// <param name="error">触发终止的原始异常。</param>
     internal void Abort(Exception error)
     {
-        foreach (var channel in SnapshotConnections())
+        foreach (SmbConnection channel in SnapshotConnections())
             channel.Abort(error);
     }
     /// <summary>在释放已经开始时阻止创建新的会话资源。</summary>
-    internal void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+    internal void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+    }
 
     /// <summary>关闭本地共享、注销会话并释放全部通道和保留的会话密钥；重复调用无效。</summary>
     public async ValueTask DisposeAsync()
@@ -681,18 +709,24 @@ public sealed partial class SmbClient : IAsyncDisposable
         {
             // 先等待已经开始的树连接操作退出，再取得释放快照，避免漏掉随后登记的共享。
             await treeGate.WaitAsync().ConfigureAwait(false);
-            treeGate.Release();
-            foreach (var share in shares.Keys)
-                try { await share.DisposeAsync().ConfigureAwait(false); }
+            _ = treeGate.Release();
+            foreach (SmbShare share in shares.Keys)
+                try
+                {
+                    await share.DisposeAsync().ConfigureAwait(false);
+                }
                 catch (Exception ex) when (ex is IOException or TimeoutException) { }
             if (HasLiveChannel)
             {
-                var response = await SendAsync(Command.Logoff, new byte[] { 4, 0, 0, 0 },
+                Response response = await SendAsync(Command.Logoff, new byte[] { 4, 0, 0, 0 },
                     0, CancellationToken.None).ConfigureAwait(false);
                 response.EnsureSuccess();
             }
         }
         catch (Exception ex) when (ex is IOException or TimeoutException) { }
-        finally { await DisposeChannelsAsync().ConfigureAwait(false); }
+        finally
+        {
+            await DisposeChannelsAsync().ConfigureAwait(false);
+        }
     }
 }

@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>活动通道实际生成及成功解压的 SMB 压缩变换统计快照。</summary>
 /// <param name="CompressedMessagesSent">已经生成供发送的 FC SMB 消息数；不表示远端已确认收到。</param>

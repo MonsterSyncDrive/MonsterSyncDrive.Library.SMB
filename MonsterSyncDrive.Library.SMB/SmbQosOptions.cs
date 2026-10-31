@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 
 /// <summary>应用请求的相对优先级；加权轮转保证低优先级不会被无限饿死。</summary>
@@ -41,14 +41,23 @@ public enum SmbRequestPriority
 public sealed record SmbQosOptions
 {
     /// <summary>上传文件数据的字节每秒速率；零表示无限制，不计算协议头和控制消息。</summary>
-    public long UploadBytesPerSecond { get; init; }
+    public long UploadBytesPerSecond
+    {
+        get; init;
+    }
 
     /// <summary>交付给应用的文件读取数据速率，单位字节每秒；零表示无限制，控制消息不受此限。</summary>
-    public long DownloadBytesPerSecond { get; init; }
+    public long DownloadBytesPerSecond
+    {
+        get; init;
+    }
     /// <summary>每个方向的初始突发额度，最多采用配置速率的一秒数据量。</summary>
     public int BurstBytes { get; init; } = 65536;
     /// <summary>等待响应的普通请求并发上限；零表示不限制，长通知和必要控制消息不占此预算。</summary>
-    public int MaximumConcurrentRequests { get; init; }
+    public int MaximumConcurrentRequests
+    {
+        get; init;
+    }
 
     /// <summary>并发请求预算耗尽后最多排队的普通请求数，超出时在发送前明确失败。</summary>
     public int MaximumQueuedRequests { get; init; } = 4096;
@@ -60,10 +69,12 @@ public sealed record SmbQosOptions
     /// <summary>验证非负速率、正突发额度、队列和并发上限，返回独立策略记录。</summary>
     internal SmbQosOptions Snapshot()
     {
-        if (UploadBytesPerSecond < 0 || DownloadBytesPerSecond < 0 || BurstBytes < 1 ||
-            MaximumConcurrentRequests is < 0 or > 65535 || MaximumQueuedRequests < 1 || !Enum.IsDefined(DefaultPriority))
-            throw new ArgumentException("Invalid SMB QoS rates or scheduling limits.");
-        return this with { };
+        return UploadBytesPerSecond < 0 || DownloadBytesPerSecond < 0 || BurstBytes < 1 ||
+            MaximumConcurrentRequests is < 0 or > 65535 || MaximumQueuedRequests < 1 || !Enum.IsDefined(DefaultPriority)
+            ? throw new ArgumentException("Invalid SMB QoS rates or scheduling limits.")
+            : (this with
+            {
+            });
     }
 }
 
@@ -93,22 +104,32 @@ public sealed class SmbQosScope : IDisposable
     /// <param name="value">当前异步调用链采用的优先级。</param>
     private SmbQosScope(SmbRequestPriority value)
     {
-        if (!Enum.IsDefined(value)) throw new ArgumentOutOfRangeException(nameof(value));
-        priority = value; previous = Current.Value; Current.Value = this;
+        if (!Enum.IsDefined(value))
+            throw new ArgumentOutOfRangeException(nameof(value));
+        priority = value;
+        previous = Current.Value;
+        Current.Value = this;
     }
 
     /// <summary>为当前异步调用链创建优先级作用域；应以 using 按栈顺序释放。</summary>
     /// <param name="priority">作用域内新建 SMB 请求采用的优先级。</param>
-    public static SmbQosScope Begin(SmbRequestPriority priority) => new(priority);
+    public static SmbQosScope Begin(SmbRequestPriority priority)
+    {
+        return new(priority);
+    }
 
     /// <summary>读取当前异步优先级，没有作用域时返回策略默认值。</summary>
     /// <param name="fallback">默认请求级别。</param>
-    internal static SmbRequestPriority PriorityOr(SmbRequestPriority fallback) => Current.Value?.priority ?? fallback;
+    internal static SmbRequestPriority PriorityOr(SmbRequestPriority fallback)
+    {
+        return Current.Value?.priority ?? fallback;
+    }
 
     /// <summary>恢复父作用域；拒绝跨控制流或乱序释放造成的优先级污染。</summary>
     public void Dispose()
     {
-        if (ReferenceEquals(Current.Value, this)) Current.Value = previous;
+        if (ReferenceEquals(Current.Value, this))
+            Current.Value = previous;
         else if (!ReferenceEquals(Current.Value, previous))
             throw new InvalidOperationException("SMB priority scopes must be disposed in order in their owning control flow.");
     }

@@ -21,7 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB;
+
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>通过固定的文件系统配额索引控制流建立用户配额操作句柄。</summary>
 public sealed partial class SmbShare
@@ -43,9 +44,11 @@ public sealed partial class SmbShare
     public Task<SmbFileHandle> OpenQuotaControlAsync(bool writable = false, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        if (!IsDiskShare) throw new NotSupportedException("User quota control requires a disk share.");
-        var access = SmbAccessMask.ReadData | SmbAccessMask.ReadAttributes | SmbAccessMask.ReadControl | SmbAccessMask.Synchronize;
-        if (writable) access |= SmbAccessMask.WriteData;
+        if (!IsDiskShare)
+            throw new NotSupportedException("User quota control requires a disk share.");
+        SmbAccessMask access = SmbAccessMask.ReadData | SmbAccessMask.ReadAttributes | SmbAccessMask.ReadControl | SmbAccessMask.Synchronize;
+        if (writable)
+            access |= SmbAccessMask.WriteData;
         return OpenFileCoreAsync(QuotaControlPath, new SmbOpenOptions
         {
             Access = access,

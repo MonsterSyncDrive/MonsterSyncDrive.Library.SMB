@@ -21,9 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-using MonsterSyncDrive.SMB.Protocol;
+using MonsterSyncDrive.Library.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 
 /// <summary>客户端的应用级调度、流量统计和传输尺寸内部入口。</summary>

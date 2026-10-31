@@ -21,10 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Security.Cryptography;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB.Security;
+namespace MonsterSyncDrive.Library.SMB.Security;
 
 /// <summary>NTLM 认证令牌，以及供 SMB 签名和加密使用的导出会话密钥。</summary>
 /// <param name="AuthenticateMessage">序列化后的 NTLM 类型 3 消息。</param>
@@ -42,25 +42,28 @@ internal static class NtlmV2
     // SPNEGO 使用序号零和区分方向的 NTLM 密钥，对 DER 编码的机制列表签名。
     internal static byte[] MechanismListMic(ReadOnlySpan<byte> sessionKey, bool server)
     {
-        using var keyHash = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        using IncrementalHash keyHash = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
         keyHash.AppendData(sessionKey);
         keyHash.AppendData(server
             ? "session key to server-to-client signing key magic constant\0"u8
             : "session key to client-to-server signing key magic constant\0"u8);
-        var signingKey = keyHash.GetHashAndReset();
+        byte[] signingKey = keyHash.GetHashAndReset();
         try
         {
-            var mechanisms = Spnego.MechanismList();
-            var signedData = new byte[4 + mechanisms.Length];
+            byte[] mechanisms = Spnego.MechanismList();
+            byte[] signedData = new byte[4 + mechanisms.Length];
             mechanisms.CopyTo(signedData, 4);
-            var checksum = HMACMD5.HashData(signingKey, signedData);
-            var signature = new byte[16];
+            byte[] checksum = HMACMD5.HashData(signingKey, signedData);
+            byte[] signature = new byte[16];
             Wire.Put32(signature, 0, 1);
             checksum.AsSpan(0, 8).CopyTo(signature.AsSpan(4));
             CryptographicOperations.ZeroMemory(checksum);
             return signature;
         }
-        finally { CryptographicOperations.ZeroMemory(signingKey); }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(signingKey);
+        }
     }
     /// <summary>请求采用 UTF-16LE 编码的身份和目标信息字符串。</summary>
     private const uint Unicode = 1;
@@ -94,7 +97,7 @@ internal static class NtlmV2
     /// <returns>固定消息头及可选版本字段，不嵌入密码或凭据数据。</returns>
     internal static byte[] Negotiate()
     {
-        var message = new byte[40];
+        byte[] message = new byte[40];
         "NTLMSSP\0"u8.CopyTo(message);
         Wire.Put32(message, 8, 1);
         Wire.Put32(message, 12, ClientFlags | 4);
@@ -120,24 +123,24 @@ internal static class NtlmV2
             throw new SmbProtocolException("Invalid NTLM challenge message.");
         // 只接受双方都提供的能力；排除 KEY_EXCH，使导出密钥始终等于
         // NTLMv2 会话基础密钥，避免引入尚未实现的 RC4 交换。
-        var flags = Wire.U32(challenge, 20) & ClientFlags & ~KeyExchange;
+        uint flags = Wire.U32(challenge, 20) & ClientFlags & ~KeyExchange;
         if ((flags & (Unicode | Ntlm | ExtendedSessionSecurity)) != (Unicode | Ntlm | ExtendedSessionSecurity))
             throw new SmbProtocolException("The server does not support NTLMv2 extended session security.");
-        var minimumHeader = (flags & Version) != 0 ? 56 : 48;
+        int minimumHeader = (flags & Version) != 0 ? 56 : 48;
         if (challenge.Length < minimumHeader ||
             (Wire.U16(challenge, 40) != 0 && Wire.U32(challenge, 44) < minimumHeader))
             throw new SmbProtocolException("The NTLM target information overlaps its message header.");
-        var targetInfo = SecurityBuffer(challenge, 40);
-        var avPairs = new List<(ushort Id, byte[] Value)>();
-        var avOffset = 0;
-        var hasTimestamp = false;
+        byte[] targetInfo = SecurityBuffer(challenge, 40);
+        List<(ushort Id, byte[] Value)> avPairs = [];
+        int avOffset = 0;
+        bool hasTimestamp = false;
         uint avFlags = 0;
-        var seen = new HashSet<ushort>();
-        var terminated = targetInfo.Length == 0;
+        HashSet<ushort> seen = [];
+        bool terminated = targetInfo.Length == 0;
         while (avOffset < targetInfo.Length)
         {
-            var id = Wire.U16(targetInfo, avOffset);
-            var length = Wire.U16(targetInfo, avOffset + 2);
+            ushort id = Wire.U16(targetInfo, avOffset);
+            ushort length = Wire.U16(targetInfo, avOffset + 2);
             avOffset += 4;
             if (id == 0)
             {
@@ -148,7 +151,7 @@ internal static class NtlmV2
             }
             if (!seen.Add(id))
                 throw new SmbProtocolException("Duplicate NTLM target information.");
-            var value = Wire.Slice(targetInfo, avOffset, length).ToArray();
+            byte[] value = Wire.Slice(targetInfo, avOffset, length).ToArray();
             avOffset += length;
             if (id == 7)
             {
@@ -172,19 +175,19 @@ internal static class NtlmV2
             throw new SmbProtocolException("The NTLM target information has no terminator.");
         // 服务器时间戳或显式 MIC 标志用于绑定初始协商、质询和最终认证字节；
         // 在全部安全缓冲区完成布局之前，MIC 所在位置必须保持全零。
-        var micRequired = !credential.IsAnonymous && (hasTimestamp || (avFlags & 2) != 0);
+        bool micRequired = !credential.IsAnonymous && (hasTimestamp || (avFlags & 2) != 0);
         if (micRequired)
             avFlags |= 2;
-        var flagValue = new byte[4];
+        byte[] flagValue = new byte[4];
         Wire.Put32(flagValue, 0, avFlags);
         avPairs.Add((6, flagValue));
         avPairs.Add((9, Wire.Unicode.GetBytes("cifs/" + host)));
         // 不使用 TLS 的 SMB Direct TCP 连接使用全零通道绑定哈希。
         avPairs.Add((10, new byte[16]));
-        var av = new byte[avPairs.Sum(pair => pair.Value.Length + 4) + 4];
+        byte[] av = new byte[avPairs.Sum(pair => pair.Value.Length + 4) + 4];
         if (av.Length > ushort.MaxValue - 48)
             throw new SmbProtocolException("The NTLM target information is too large.");
-        var pos = 0;
+        int pos = 0;
         foreach (var (id, value) in avPairs)
         {
             Wire.Put16(av, pos, id);
@@ -193,9 +196,9 @@ internal static class NtlmV2
             pos += value.Length + 4;
         }
 
-        var user = Wire.Unicode.GetBytes(credential.UserName);
-        var domain = Wire.Unicode.GetBytes(credential.Domain);
-        var workstation = Wire.Unicode.GetBytes(Environment.MachineName);
+        byte[] user = Wire.Unicode.GetBytes(credential.UserName);
+        byte[] domain = Wire.Unicode.GetBytes(credential.Domain);
+        byte[] workstation = Wire.Unicode.GetBytes(Environment.MachineName);
         byte[] ntResponse, lmResponse, sessionKey;
         if (credential.IsAnonymous)
         {
@@ -206,26 +209,27 @@ internal static class NtlmV2
         }
         else
         {
-            var random = clientChallenge.IsEmpty ? RandomNumberGenerator.GetBytes(8) : clientChallenge.ToArray();
+            byte[] random = clientChallenge.IsEmpty ? RandomNumberGenerator.GetBytes(8) : clientChallenge.ToArray();
             if (random.Length != 8)
                 throw new ArgumentException("An NTLM client challenge is eight bytes.");
-            var passwordBytes = Wire.Unicode.GetBytes(credential.Password);
-            var passwordHash = Md4.Hash(passwordBytes);
+            byte[] passwordBytes = Wire.Unicode.GetBytes(credential.Password);
+            byte[] passwordHash = Md4.Hash(passwordBytes);
             CryptographicOperations.ZeroMemory(passwordBytes);
-            var responseKey = HMACMD5.HashData(passwordHash,
+            byte[] responseKey = HMACMD5.HashData(passwordHash,
                 Wire.Unicode.GetBytes(credential.UserName.ToUpperInvariant() + credential.Domain));
             CryptographicOperations.ZeroMemory(passwordHash);
-            var blob = new byte[32 + av.Length];
-            blob[0] = 1; blob[1] = 1;
+            byte[] blob = new byte[32 + av.Length];
+            blob[0] = 1;
+            blob[1] = 1;
             Wire.PutI64(blob, 8, timestamp ?? DateTimeOffset.UtcNow.ToFileTime());
             random.CopyTo(blob, 16);
             av.CopyTo(blob, 28);
-            var proofInput = new byte[8 + blob.Length];
+            byte[] proofInput = new byte[8 + blob.Length];
             challenge.Slice(24, 8).CopyTo(proofInput);
             blob.CopyTo(proofInput, 8);
             // NTProofStr 验证服务器质询与数据块的连接值；会话密钥则使用该证明值
             // 另行计算 HMAC；密码字节、NT 哈希和响应密钥必须在派生后及时清除。
-            var proof = HMACMD5.HashData(responseKey, proofInput);
+            byte[] proof = HMACMD5.HashData(responseKey, proofInput);
             ntResponse = new byte[16 + blob.Length];
             proof.CopyTo(ntResponse, 0);
             blob.CopyTo(ntResponse, 16);
@@ -236,7 +240,7 @@ internal static class NtlmV2
                 lmResponse = new byte[24];
             else
             {
-                var lmInput = new byte[16];
+                byte[] lmInput = new byte[16];
                 challenge.Slice(24, 8).CopyTo(lmInput);
                 random.CopyTo(lmInput, 8);
                 lmResponse = new byte[24];
@@ -245,15 +249,15 @@ internal static class NtlmV2
             }
             CryptographicOperations.ZeroMemory(responseKey);
         }
-        var hasVersion = (flags & Version) != 0;
-        var headerLength = 64 + (hasVersion ? 8 : 0) + (micRequired ? 16 : 0);
-        var message = new byte[headerLength + lmResponse.Length + ntResponse.Length + domain.Length + user.Length + workstation.Length];
+        bool hasVersion = (flags & Version) != 0;
+        int headerLength = 64 + (hasVersion ? 8 : 0) + (micRequired ? 16 : 0);
+        byte[] message = new byte[headerLength + lmResponse.Length + ntResponse.Length + domain.Length + user.Length + workstation.Length];
         "NTLMSSP\0"u8.CopyTo(message);
         Wire.Put32(message, 8, 3);
         Wire.Put32(message, 60, flags);
         if (hasVersion)
             WriteVersion(message.AsSpan(64));
-        var offset = headerLength;
+        int offset = headerLength;
         WriteBuffer(message, 12, lmResponse, ref offset);
         WriteBuffer(message, 20, ntResponse, ref offset);
         WriteBuffer(message, 28, domain, ref offset);
@@ -262,7 +266,7 @@ internal static class NtlmV2
         WriteBuffer(message, 52, [], ref offset);
         if (micRequired)
         {
-            using var hmac = IncrementalHash.CreateHMAC(HashAlgorithmName.MD5, sessionKey);
+            using IncrementalHash hmac = IncrementalHash.CreateHMAC(HashAlgorithmName.MD5, sessionKey);
             hmac.AppendData(negotiate);
             hmac.AppendData(challenge);
             hmac.AppendData(message);
@@ -278,11 +282,11 @@ internal static class NtlmV2
     /// <exception cref="SmbProtocolException">描述符指向支持范围或消息可用字节以外的位置。</exception>
     internal static byte[] SecurityBuffer(ReadOnlySpan<byte> message, int field)
     {
-        var length = Wire.U16(message, field);
-        var offset = Wire.U32(message, field + 4);
-        if (offset > int.MaxValue)
-            throw new SmbProtocolException("Invalid NTLM security buffer.");
-        return Wire.Slice(message, (int)offset, length).ToArray();
+        ushort length = Wire.U16(message, field);
+        uint offset = Wire.U32(message, field + 4);
+        return offset > int.MaxValue
+            ? throw new SmbProtocolException("Invalid NTLM security buffer.")
+            : Wire.Slice(message, (int)offset, length).ToArray();
     }
 
     /// <summary>写入一个安全缓冲区描述符，并将内容追加到认证消息中。</summary>

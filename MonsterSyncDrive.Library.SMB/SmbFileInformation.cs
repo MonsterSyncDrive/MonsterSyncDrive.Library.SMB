@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>MS-FSCC 文件信息类编号，包含用于用途识别的本地专用类。</summary>
 public enum SmbFileInformationClass : byte
@@ -177,7 +177,10 @@ public static class SmbFileInformationCatalog
 {
 
     /// <summary>所有已分类条目的只读集合。远程用途不代表每个服务端均实现该可选信息类。</summary>
-    public static IReadOnlyList<SmbFileInformationSupport> All { get; } = Array.AsReadOnly(new[]
+    public static IReadOnlyList<SmbFileInformationSupport> All
+    {
+        get;
+    } = Array.AsReadOnly(new[]
     {
         File(SmbFileInformationClass.Access, "FileAccessInformation", true, false),
         File(SmbFileInformationClass.Alignment, "FileAlignmentInformation", true, false),
@@ -239,8 +242,10 @@ public static class SmbFileInformationCatalog
     /// <param name="informationClass">要查找的标准信息类编号。</param>
     /// <returns>包含规范名称、路由和查询/设置用途的条目。</returns>
     public static SmbFileInformationSupport Get(SmbFileInformationClass informationClass)
-        => All.FirstOrDefault(item => item.InformationClass == informationClass)
-            ?? throw new ArgumentOutOfRangeException(nameof(informationClass));
+    {
+        return All.FirstOrDefault(item => item.InformationClass == informationClass)
+                ?? throw new ArgumentOutOfRangeException(nameof(informationClass));
+    }
 
 
     /// <summary>建立普通 File 信息路由的目录项。</summary>
@@ -250,21 +255,27 @@ public static class SmbFileInformationCatalog
     /// <param name="set">是否允许设置。</param>
     /// <returns>不可变的用途描述。</returns>
     private static SmbFileInformationSupport File(SmbFileInformationClass value, string name, bool query, bool set)
-        => new(value, name, SmbInformationRoute.File, query, set);
+    {
+        return new(value, name, SmbInformationRoute.File, query, set);
+    }
 
     /// <summary>建立只支持 QUERY_DIRECTORY 的目录项。</summary>
     /// <param name="value">目录结果信息类编号。</param>
     /// <param name="name">规范名称。</param>
     /// <returns>目录查询用途描述。</returns>
     private static SmbFileInformationSupport Directory(SmbFileInformationClass value, string name)
-        => new(value, name, SmbInformationRoute.Directory, true, false);
+    {
+        return new(value, name, SmbInformationRoute.Directory, true, false);
+    }
 
     /// <summary>建立规范明确标记 LOCAL 的目录项，关闭网络查询与设置标志。</summary>
     /// <param name="value">本地信息类编号。</param>
     /// <param name="name">规范名称。</param>
     /// <returns>本地用途描述。</returns>
     private static SmbFileInformationSupport Local(SmbFileInformationClass value, string name)
-        => new(value, name, SmbInformationRoute.LocalOnly, false, false);
+    {
+        return new(value, name, SmbInformationRoute.LocalOnly, false, false);
+    }
 }
 
 
@@ -519,16 +530,25 @@ public sealed record SmbExtendedAttributeQuery
 {
 
     /// <summary>可选 ASCII 名称筛选列表；不与 StartIndex 同时使用。</summary>
-    public IReadOnlyList<string>? Names { get; init; }
+    public IReadOnlyList<string>? Names
+    {
+        get; init;
+    }
 
     /// <summary>可选的一基 EA 索引；零无效。</summary>
-    public uint? StartIndex { get; init; }
+    public uint? StartIndex
+    {
+        get; init;
+    }
 
     /// <summary>没有显式索引或名称时，是否从第一个 EA 重新开始。</summary>
     public bool RestartScan { get; init; } = true;
 
     /// <summary>最多返回一个 EA；最后一项可能仍需额外空查询才能确认结束。</summary>
-    public bool ReturnSingleEntry { get; init; }
+    public bool ReturnSingleEntry
+    {
+        get; init;
+    }
 
     /// <summary>首次查询的最大输出字节数，默认 65536；受协商事务容量限制。</summary>
     public int BufferSize { get; init; } = 65536;
@@ -609,16 +629,28 @@ public sealed record SmbDirectoryQuery
     public SmbDirectoryInformationClass InformationClass { get; init; } = SmbDirectoryInformationClass.Directory;
 
     /// <summary>重新从当前模式的起点开始枚举。</summary>
-    public bool RestartScan { get; init; }
+    public bool RestartScan
+    {
+        get; init;
+    }
 
     /// <summary>请求最多返回一个目录条目。</summary>
-    public bool ReturnSingleEntry { get; init; }
+    public bool ReturnSingleEntry
+    {
+        get; init;
+    }
 
     /// <summary>要求服务器重新开始目录枚举。</summary>
-    public bool Reopen { get; init; }
+    public bool Reopen
+    {
+        get; init;
+    }
 
     /// <summary>可选的目录枚举索引；某些文件系统可忽略它。</summary>
-    public uint? FileIndex { get; init; }
+    public uint? FileIndex
+    {
+        get; init;
+    }
 
     /// <summary>最大输出字节数，默认 65536；显式更大值仅限支持多 credit 的协商连接。</summary>
     public int BufferSize { get; init; } = 65536;

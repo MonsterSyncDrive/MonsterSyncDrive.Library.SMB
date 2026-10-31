@@ -21,10 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Threading.Channels;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>跟踪传统机会锁授予状态，并串行处理同一打开句柄的缓存权限撤销。</summary>
 public sealed partial class SmbFileHandle
@@ -48,7 +48,7 @@ public sealed partial class SmbFileHandle
     private Exception? oplockInvalidationError;
 
     /// <summary>当前授予的级别；处理有效撤销时立即降低，关闭后返回 None。</summary>
-    public SmbOplockLevel OplockLevel => IsClosed || !share.Client.IsTransportAlive
+    public SmbOplockLevel OplockLevel => IsClosed || !Share.Client.IsTransportAlive
         ? SmbOplockLevel.None : (SmbOplockLevel)Volatile.Read(ref oplockLevel);
 
     /// <summary>
@@ -70,7 +70,7 @@ public sealed partial class SmbFileHandle
     /// <exception cref="SmbProtocolException">对端授予了未知级别、租约级别或高于请求的级别。</exception>
     internal void InitializeOplock(byte granted)
     {
-        var level = (SmbOplockLevel)granted;
+        SmbOplockLevel level = (SmbOplockLevel)granted;
         if (!SmbOplockProtocol.CanGrant(OpenOptions.RequestedOplockLevel, level))
             throw new SmbProtocolException("The server granted an invalid or unrequested oplock level.");
         lock (oplockGate)
@@ -91,7 +91,7 @@ public sealed partial class SmbFileHandle
             if (queuedOplockBreaks >= 8)
                 throw new SmbProtocolException("Too many pending oplock break notifications for a file.");
             queuedOplockBreaks++;
-            var previous = oplockProcessing;
+            Task previous = oplockProcessing;
             // 用户代码自身可能发起 SMB 操作，因此不能在连接接收循环上执行，否则会阻塞响应处理。
             oplockProcessing = Task.Run(async () =>
             {
@@ -102,7 +102,8 @@ public sealed partial class SmbFileHandle
                 }
                 finally
                 {
-                    lock (oplockGate) queuedOplockBreaks--;
+                    lock (oplockGate)
+                        queuedOplockBreaks--;
                 }
             });
         }
@@ -125,20 +126,20 @@ public sealed partial class SmbFileHandle
                 return;
             // 持有 oplockGate 时不能调用公共属性读取器，因为它会检查通道状态。
             // 通道失败清理先获取 channelLock 再获取此锁，反向获取会造成锁顺序倒置。
-            var previous = (SmbOplockLevel)Volatile.Read(ref oplockLevel);
+            SmbOplockLevel previous = (SmbOplockLevel)Volatile.Read(ref oplockLevel);
             if (!SmbOplockProtocol.IsTransition(previous, requested))
                 return; // 按 MS-SMB2 第 3.2.5.19.1 节忽略未知或不适用的转换。
             Volatile.Write(ref oplockLevel, (int)requested);
             notification = new SmbOplockBreak(this, previous, requested, previous != SmbOplockLevel.LevelII);
-            oplockNotifications.Writer.TryWrite(notification);
+            _ = oplockNotifications.Writer.TryWrite(notification);
         }
 
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(oplockLifetime.Token);
-        var timeout = share.Client.Options.OperationTimeout;
+        using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(oplockLifetime.Token);
+        var timeout = Share.Client.Options.OperationTimeout;
         deadline.CancelAfter(timeout == Timeout.InfiniteTimeSpan ? TimeSpan.FromSeconds(60) : timeout);
         try
         {
-            var accepted = requested;
+            SmbOplockLevel accepted = requested;
             if (OpenOptions.OplockBreakHandler is { } handler)
                 accepted = await handler(notification, deadline.Token).AsTask().WaitAsync(deadline.Token).ConfigureAwait(false);
             if (!SmbOplockProtocol.CanGrant(requested, accepted))
@@ -153,11 +154,11 @@ public sealed partial class SmbFileHandle
 
             if (notification.RequiresAcknowledgement)
             {
-                var response = await share.SendAsync(Command.OplockBreak,
+                var response = await Share.SendAsync(Command.OplockBreak,
                     SmbOplockProtocol.Acknowledgement(Id, accepted), deadline.Token).ConfigureAwait(false);
                 response.EnsureSuccess();
                 Wire.Structure(response.Packet, 24, 24);
-                var result = (SmbOplockLevel)response.Packet[66];
+                SmbOplockLevel result = (SmbOplockLevel)response.Packet[66];
                 if (response.Packet.Length != 88 || SmbFileId.Read(response.Packet, 72) != Id ||
                     !SmbOplockProtocol.CanGrant(accepted, result))
                     throw new SmbProtocolException("Invalid oplock acknowledgment response.");
@@ -176,10 +177,10 @@ public sealed partial class SmbFileHandle
         }
         catch (Exception error)
         {
-            var failure = error is OperationCanceledException
+            Exception failure = error is OperationCanceledException
                 ? new TimeoutException("An oplock break handler or acknowledgment timed out.", error)
                 : error;
-            share.Client.Abort(new SmbProtocolException("The oplock downgrade could not be completed safely.", failure));
+            Share.Client.Abort(new SmbProtocolException("The oplock downgrade could not be completed safely.", failure));
             notification.Fail(failure);
         }
     }
@@ -195,7 +196,7 @@ public sealed partial class SmbFileHandle
             oplockInvalidated = true;
             oplockInvalidationError = error;
             Volatile.Write(ref oplockLevel, 0);
-            oplockNotifications.Writer.TryComplete(error);
+            _ = oplockNotifications.Writer.TryComplete(error);
         }
         // 取消处理程序属于应用程序代码，不能在 SMB 接收循环上执行。
         _ = CancelOplockLifetimeAsync();
@@ -205,7 +206,10 @@ public sealed partial class SmbFileHandle
     /// <returns>所有取消回调完成后结束的任务。</returns>
     private async Task CancelOplockLifetimeAsync()
     {
-        try { await oplockLifetime.CancelAsync().ConfigureAwait(false); }
+        try
+        {
+            await oplockLifetime.CancelAsync().ConfigureAwait(false);
+        }
         catch (Exception) { /* 用户令牌回调不能阻止句柄或会话清理。 */ }
     }
 }

@@ -21,9 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-using MonsterSyncDrive.SMB.Protocol;
+using MonsterSyncDrive.Library.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>远端文件句柄的分配信息查询、分配设置和结果核对操作。</summary>
 public sealed partial class SmbFileHandle
@@ -35,7 +35,7 @@ public sealed partial class SmbFileHandle
     /// <exception cref="SmbProtocolException">服务器返回的记录截断或含无效字段。</exception>
     public async Task<SmbFileAllocationInfo> GetAllocationInfoAsync(CancellationToken cancellationToken = default)
     {
-        var data = await QueryInfoAsync(SmbInfoType.File, 5, maximumOutput: 24,
+        byte[] data = await QueryInfoAsync(SmbInfoType.File, 5, maximumOutput: 24,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         return ParseAllocationInfo(data);
     }
@@ -46,12 +46,12 @@ public sealed partial class SmbFileHandle
     /// <exception cref="SmbProtocolException">记录不足 24 字节或字段值违反协议约束。</exception>
     internal static SmbFileAllocationInfo ParseAllocationInfo(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 24);
-        var allocation = Wire.I64(data, 0);
-        var eof = Wire.I64(data, 8);
-        if (allocation < 0 || eof < 0 || data[20] > 1 || data[21] > 1)
-            throw new SmbProtocolException("The server returned invalid standard file allocation information.");
-        return new(allocation, eof, Wire.U32(data, 16), data[20] != 0, data[21] != 0);
+        _ = Wire.Slice(data, 0, 24);
+        long allocation = Wire.I64(data, 0);
+        long eof = Wire.I64(data, 8);
+        return allocation < 0 || eof < 0 || data[20] > 1 || data[21] > 1
+            ? throw new SmbProtocolException("The server returned invalid standard file allocation information.")
+            : new(allocation, eof, Wire.U32(data, 16), data[20] != 0, data[21] != 0);
     }
 
     /// <summary>
@@ -70,14 +70,14 @@ public sealed partial class SmbFileHandle
     {
         ArgumentOutOfRangeException.ThrowIfNegative(requestedSize);
         // “查询、设置、查询”是三个独立远端操作。保留两次观察值，不能把成功确认改写成物理预留保证。
-        var before = await GetAllocationInfoAsync(cancellationToken).ConfigureAwait(false);
+        SmbFileAllocationInfo before = await GetAllocationInfoAsync(cancellationToken).ConfigureAwait(false);
         await SetAllocationSizeAsync(requestedSize, cancellationToken).ConfigureAwait(false);
-        var after = await GetAllocationInfoAsync(cancellationToken).ConfigureAwait(false);
+        SmbFileAllocationInfo after = await GetAllocationInfoAsync(cancellationToken).ConfigureAwait(false);
         var result = new SmbAllocationResult(requestedSize, before, after);
-        if (requireReportedAllocation && !result.ReportedAllocationMeetsRequest)
-            throw new IOException($"The server acknowledged an allocation of {requestedSize} bytes but reports {after.AllocationSize} bytes. " +
-                "The allocation request has already executed; physical reservation is not confirmed.");
-        return result;
+        return requireReportedAllocation && !result.ReportedAllocationMeetsRequest
+            ? throw new IOException($"The server acknowledged an allocation of {requestedSize} bytes but reports {after.AllocationSize} bytes. " +
+                "The allocation request has already executed; physical reservation is not confirmed.")
+            : result;
     }
 
     /// <summary>
@@ -94,17 +94,17 @@ public sealed partial class SmbFileHandle
         CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(minimumSize);
-        var before = await GetAllocationInfoAsync(cancellationToken).ConfigureAwait(false);
+        SmbFileAllocationInfo before = await GetAllocationInfoAsync(cancellationToken).ConfigureAwait(false);
         if (before.AllocationSize >= minimumSize)
             return new(minimumSize, before, before);
         // 稀疏文件的 AllocationSize 可以小于 EOF；直接传入 minimumSize 可能意外截断逻辑数据。
-        var requested = Math.Max(minimumSize, before.EndOfFile);
+        long requested = Math.Max(minimumSize, before.EndOfFile);
         await SetAllocationSizeAsync(requested, cancellationToken).ConfigureAwait(false);
-        var after = await GetAllocationInfoAsync(cancellationToken).ConfigureAwait(false);
+        SmbFileAllocationInfo after = await GetAllocationInfoAsync(cancellationToken).ConfigureAwait(false);
         var result = new SmbAllocationResult(minimumSize, before, after);
-        if (requireReportedAllocation && !result.ReportedAllocationMeetsRequest)
-            throw new IOException($"The server reports {after.AllocationSize} allocated bytes after requesting at least {minimumSize}. " +
-                "The allocation request has already executed; physical reservation is not confirmed.");
-        return result;
+        return requireReportedAllocation && !result.ReportedAllocationMeetsRequest
+            ? throw new IOException($"The server reports {after.AllocationSize} allocated bytes after requesting at least {minimumSize}. " +
+                "The allocation request has already executed; physical reservation is not confirmed.")
+            : result;
     }
 }

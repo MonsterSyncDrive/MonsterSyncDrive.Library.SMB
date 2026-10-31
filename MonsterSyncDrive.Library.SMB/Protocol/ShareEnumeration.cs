@@ -23,7 +23,7 @@
  */
 using System.Buffers.Binary;
 
-namespace MonsterSyncDrive.SMB.Protocol;
+namespace MonsterSyncDrive.Library.SMB.Protocol;
 
 /// <summary>通过面向连接的 DCE/RPC 和 NDR32，使用 MS-SRVS NetrShareEnum 级别 1 枚举服务器共享。</summary>
 /// <param name="pipe">调用者拥有且已经认证的 srvsvc 命名管道句柄。</param>
@@ -49,38 +49,40 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
     /// <exception cref="SmbProtocolException">绑定、帧结构、分片推进、分页推进或数量限制无效。</exception>
     internal async Task<IReadOnlyList<SmbShareInfo>> EnumerateAsync(CancellationToken cancellationToken)
     {
-        var bind = Pdu(11, 72, ++callId);
-        Wire.Put16(bind, 16, 4280); Wire.Put16(bind, 18, 4280);
-        bind[24] = 1; bind[30] = 1;
-        Srvsvc.TryWriteBytes(bind.AsSpan(32, 16));
+        byte[] bind = Pdu(11, 72, ++callId);
+        Wire.Put16(bind, 16, 4280);
+        Wire.Put16(bind, 18, 4280);
+        bind[24] = 1;
+        bind[30] = 1;
+        _ = Srvsvc.TryWriteBytes(bind.AsSpan(32, 16));
         Wire.Put16(bind, 48, 3);
-        Ndr32.TryWriteBytes(bind.AsSpan(52, 16));
+        _ = Ndr32.TryWriteBytes(bind.AsSpan(52, 16));
         Wire.Put32(bind, 68, 2);
         buffered = await pipe.TransceivePipeFragmentAsync(bind, cancellationToken).ConfigureAwait(false);
-        var ack = await ReadPduAsync(cancellationToken).ConfigureAwait(false);
+        byte[] ack = await ReadPduAsync(cancellationToken).ConfigureAwait(false);
         ValidatePdu(ack, 12, callId);
         // 辅助地址字符串长度可变，上下文结果列表在该字符串之后对齐，
         // 并不位于固定偏移；解释任何 NDR32 响应前必须验证服务器接受的语法。
-        var secondaryAddressLength = Wire.U16(ack, 24);
-        var resultsOffset = checked((26 + secondaryAddressLength + 3) & ~3);
-        var results = Wire.Slice(ack, resultsOffset, 28);
+        ushort secondaryAddressLength = Wire.U16(ack, 24);
+        int resultsOffset = checked((26 + secondaryAddressLength + 3) & ~3);
+        ReadOnlySpan<byte> results = Wire.Slice(ack, resultsOffset, 28);
         if (ack[3] != 3 || results[0] != 1 || Wire.U16(results, 4) != 0 ||
             new Guid(results.Slice(8, 16)) != Ndr32 || Wire.U32(results, 24) != 2)
             throw new SmbProtocolException("The RPC server rejected the srvsvc NDR32 binding.");
         var shares = new List<SmbShareInfo>();
         var resumes = new HashSet<uint>();
         uint resume = 0;
-        for (var page = 0; page < 4096; page++)
+        for (int page = 0; page < 4096; page++)
         {
-            var stub = BuildRequest(host, resume);
-            var request = Pdu(0, 24 + stub.Length, ++callId);
+            byte[] stub = BuildRequest(host, resume);
+            byte[] request = Pdu(0, 24 + stub.Length, ++callId);
             Wire.Put32(request, 16, (uint)stub.Length);
             Wire.Put16(request, 22, 15);
             stub.CopyTo(request, 24);
-            var incoming = await pipe.TransceivePipeFragmentAsync(request, cancellationToken).ConfigureAwait(false);
+            byte[] incoming = await pipe.TransceivePipeFragmentAsync(request, cancellationToken).ConfigureAwait(false);
             buffered = Concat(buffered, incoming);
-            var response = await ReadResponseAsync(cancellationToken).ConfigureAwait(false);
-            var decoded = ParseResponse(response);
+            byte[] response = await ReadResponseAsync(cancellationToken).ConfigureAwait(false);
+            Page decoded = ParseResponse(response);
             shares.AddRange(decoded.Shares);
             if (decoded.Status == 0)
                 return shares;
@@ -127,38 +129,44 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
     internal static Page ParseResponse(ReadOnlySpan<byte> stub)
     {
         var reader = new NdrReader(stub);
-        if (reader.UInt32() != 1 || reader.UInt32() != 1)
+        if (reader.UInt32() is not 1 or not 1)
             throw new SmbProtocolException("Unexpected share enumeration information level.");
         var shares = new List<SmbShareInfo>();
         if (reader.UInt32() != 0)
         {
-            var count = reader.UInt32();
-            var pointer = reader.UInt32();
+            uint count = reader.UInt32();
+            uint pointer = reader.UInt32();
             if (count > 65536 || (count != 0 && pointer == 0))
                 throw new SmbProtocolException("Invalid RPC share count.");
             if (pointer != 0)
             {
-                var maximum = reader.UInt32();
+                uint maximum = reader.UInt32();
                 if (maximum != count)
                     throw new SmbProtocolException("Inconsistent RPC conformant array length.");
                 // NDR 先写入一致性数组的固定记录，再写入延迟解引用的字符串内容。
                 // 应先读取指针存在标志，再按声明顺序读取指针指向的内容。
                 var records = new (bool Name, uint Type, bool Remark)[count];
-                for (var i = 0; i < records.Length; i++)
+                for (int i = 0; i < records.Length; i++)
                     records[i] = (reader.UInt32() != 0, reader.UInt32(), reader.UInt32() != 0);
-                foreach (var record in records)
+                foreach ((bool Name, uint Type, bool Remark) record in records)
                 {
-                    var name = record.Name ? reader.String() : "";
-                    var remark = record.Remark ? reader.String() : "";
-                    try { SmbPath.ValidateShare(name); }
-                    catch (ArgumentException ex) { throw new SmbProtocolException("Invalid RPC share name.", ex); }
+                    string name = record.Name ? reader.String() : "";
+                    string remark = record.Remark ? reader.String() : "";
+                    try
+                    {
+                        _ = SmbPath.ValidateShare(name);
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        throw new SmbProtocolException("Invalid RPC share name.", ex);
+                    }
                     shares.Add(new SmbShareInfo(name, record.Type, remark));
                 }
             }
         }
-        reader.UInt32(); // TotalEntries：服务器报告的条目总数。
-        var resume = reader.UInt32() != 0 ? reader.UInt32() : 0;
-        var status = reader.UInt32();
+        _ = reader.UInt32(); // TotalEntries：服务器报告的条目总数。
+        uint resume = reader.UInt32() != 0 ? reader.UInt32() : 0;
+        uint status = reader.UInt32();
         reader.End();
         return new Page(shares, resume, status);
     }
@@ -171,17 +179,17 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
     private async Task<byte[]> ReadResponseAsync(CancellationToken cancellationToken)
     {
         using var output = new MemoryStream();
-        var first = true;
-        for (var fragment = 0; fragment < 4096; fragment++)
+        bool first = true;
+        for (int fragment = 0; fragment < 4096; fragment++)
         {
-            var pdu = await ReadPduAsync(cancellationToken).ConfigureAwait(false);
+            byte[] pdu = await ReadPduAsync(cancellationToken).ConfigureAwait(false);
             if (pdu[2] == 3)
             {
                 ValidatePdu(pdu, 3, callId);
                 throw new SmbRpcException(Wire.U32(pdu, 24), true);
             }
             ValidatePdu(pdu, 2, callId);
-            if (pdu.Length < 24 || Wire.U16(pdu, 20) != 0 || ((pdu[3] & 1) != 0) != first)
+            if (pdu.Length < 24 || Wire.U16(pdu, 20) != 0 || (pdu[3] & 1) != 0 != first)
                 throw new SmbProtocolException("Invalid RPC response fragment sequence.");
             // 最后一段的数据可以为空；非末段若为空则无法推进重组，必须拒绝。
             if (pdu.Length == 24 && (pdu[3] & 2) == 0)
@@ -202,11 +210,11 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
     private async Task<byte[]> ReadPduAsync(CancellationToken cancellationToken)
     {
         await FillAsync(16, cancellationToken).ConfigureAwait(false);
-        var length = Wire.U16(buffered, 8);
+        ushort length = Wire.U16(buffered, 8);
         if (length < 16)
             throw new SmbProtocolException("Invalid RPC fragment length.");
         await FillAsync(length, cancellationToken).ConfigureAwait(false);
-        var result = buffered[..length];
+        byte[] result = buffered[..length];
         buffered = buffered[length..];
         return result;
     }
@@ -220,8 +228,8 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
     {
         while (buffered.Length < minimum)
         {
-            var block = new byte[65536];
-            var count = await pipe.ReadAsync(block, 0, cancellationToken).ConfigureAwait(false);
+            byte[] block = new byte[65536];
+            int count = await pipe.ReadAsync(block, 0, cancellationToken).ConfigureAwait(false);
             if (count == 0)
                 throw new SmbProtocolException("The RPC pipe closed before a complete response arrived.");
             buffered = Concat(buffered, block.AsSpan(0, count));
@@ -251,9 +259,13 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
     /// <returns>经过清零并设置首段和末段标志的消息。</returns>
     private static byte[] Pdu(byte type, int length, uint id)
     {
-        var data = new byte[length];
-        data[0] = 5; data[2] = type; data[3] = 3; data[4] = 0x10;
-        Wire.Put16(data, 8, checked((ushort)length)); Wire.Put32(data, 12, id);
+        byte[] data = new byte[length];
+        data[0] = 5;
+        data[2] = type;
+        data[3] = 3;
+        data[4] = 0x10;
+        Wire.Put16(data, 8, checked((ushort)length));
+        Wire.Put32(data, 12, id);
         return data;
     }
 
@@ -263,8 +275,9 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
     /// <returns>新分配并拥有的连续字节数组。</returns>
     private static byte[] Concat(ReadOnlySpan<byte> first, ReadOnlySpan<byte> second)
     {
-        var result = new byte[checked(first.Length + second.Length)];
-        first.CopyTo(result); second.CopyTo(result.AsSpan(first.Length));
+        byte[] result = new byte[checked(first.Length + second.Length)];
+        first.CopyTo(result);
+        second.CopyTo(result.AsSpan(first.Length));
         return result;
     }
 
@@ -283,8 +296,10 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
     /// <param name="text">尚未包含线上终止符的托管字符串。</param>
     private static void WriteString(Stream stream, string text)
     {
-        var bytes = Wire.Unicode.GetBytes(text + "\0");
-        Write32(stream, (uint)bytes.Length / 2); Write32(stream, 0); Write32(stream, (uint)bytes.Length / 2);
+        byte[] bytes = Wire.Unicode.GetBytes(text + "\0");
+        Write32(stream, (uint)bytes.Length / 2);
+        Write32(stream, 0);
+        Write32(stream, (uint)bytes.Length / 2);
         stream.Write(bytes);
         while (stream.Position % 4 != 0)
             stream.WriteByte(0);
@@ -299,13 +314,17 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
         private int position;
         /// <summary>在响应数据起点创建读取游标。</summary>
         /// <param name="data">需要解析的完整响应数据。</param>
-        internal NdrReader(ReadOnlySpan<byte> data) { this.data = data; position = 0; }
+        internal NdrReader(ReadOnlySpan<byte> data)
+        {
+            this.data = data;
+            position = 0;
+        }
         /// <summary>读取下一个按四字节对齐的小端无符号整数。</summary>
         /// <returns>解析得到的数值。</returns>
         internal uint UInt32()
         {
             position = checked((position + 3) & ~3);
-            var value = Wire.U32(data, position);
+            uint value = Wire.U32(data, position);
             position += 4;
             return value;
         }
@@ -314,18 +333,18 @@ internal sealed class ShareEnumeration(SmbFileHandle pipe, string host)
         /// <exception cref="SmbProtocolException">数组边界、编码字节或终止符无效。</exception>
         internal string String()
         {
-            var maximum = UInt32();
-            var offset = UInt32();
-            var actual = UInt32();
+            uint maximum = UInt32();
+            uint offset = UInt32();
+            uint actual = UInt32();
             if (actual == 0 || actual > int.MaxValue / 2 || maximum > MaximumStub / 2 ||
                 offset > maximum || actual > maximum - offset)
                 throw new SmbProtocolException("Invalid NDR string bounds.");
-            var length = (int)actual * 2;
-            var text = Wire.Text(data, position, length);
+            int length = (int)actual * 2;
+            string text = Wire.Text(data, position, length);
             position = checked(position + length);
-            if (text[^1] != '\0' || text[..^1].Contains('\0'))
-                throw new SmbProtocolException("An NDR string is not correctly terminated.");
-            return text[..^1];
+            return text[^1] != '\0' || text[..^1].Contains('\0')
+                ? throw new SmbProtocolException("An NDR string is not correctly terminated.")
+                : text[..^1];
         }
         /// <summary>要求解析器完全消费响应数据，不允许存在无法解释的尾部字节。</summary>
         /// <exception cref="SmbProtocolException">仍有尚未解析的字节。</exception>

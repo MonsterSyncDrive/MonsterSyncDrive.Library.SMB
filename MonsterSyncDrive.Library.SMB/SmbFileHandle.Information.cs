@@ -21,10 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Runtime.CompilerServices;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 
 /// <summary>远程句柄的标准文件信息扩展，提供类型化查询、设置、EA 分页和目录格式选择。</summary>
@@ -45,80 +45,104 @@ public sealed partial class SmbFileHandle
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>访问掩码；不是对其他身份的有效权限计算。</returns>
     public async Task<SmbAccessMask> GetAccessMaskAsync(CancellationToken cancellationToken = default)
-        => (SmbAccessMask)Wire.U32(await FileInformationAsync(SmbFileInformationClass.Access, cancellationToken).ConfigureAwait(false), 0);
+    {
+        return (SmbAccessMask)Wire.U32(await FileInformationAsync(SmbFileInformationClass.Access, cancellationToken).ConfigureAwait(false), 0);
+    }
 
     /// <summary>读取并校验 FileAlignmentInformation 的设备对齐掩码。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>对齐掩码与字节边界。</returns>
     public async Task<SmbAlignmentInformation> GetAlignmentInformationAsync(CancellationToken cancellationToken = default)
-        => SmbFileInformationCodec.Alignment(await FileInformationAsync(SmbFileInformationClass.Alignment, cancellationToken).ConfigureAwait(false));
+    {
+        return SmbFileInformationCodec.Alignment(await FileInformationAsync(SmbFileInformationClass.Alignment, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>读取 FileBasicInformation 的四类时间和文件属性。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>基本文件信息快照。</returns>
     public async Task<SmbBasicInformation> GetBasicInformationAsync(CancellationToken cancellationToken = default)
-        => SmbFileInformationCodec.Basic(await FileInformationAsync(SmbFileInformationClass.Basic, cancellationToken).ConfigureAwait(false));
+    {
+        return SmbFileInformationCodec.Basic(await FileInformationAsync(SmbFileInformationClass.Basic, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>读取 FileStandardInformation 的大小、链接和删除状态。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>标准文件信息快照。</returns>
     public async Task<SmbStandardInformation> GetStandardInformationAsync(CancellationToken cancellationToken = default)
-        => SmbFileInformationCodec.Standard(await FileInformationAsync(SmbFileInformationClass.Standard, cancellationToken).ConfigureAwait(false));
+    {
+        return SmbFileInformationCodec.Standard(await FileInformationAsync(SmbFileInformationClass.Standard, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>读取并完整解码 FileAllInformation，包括访问、模式、游标、EA 和对齐。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>完整聚合信息模型。</returns>
     public async Task<SmbAllInformation> GetAllInformationAsync(CancellationToken cancellationToken = default)
-        => SmbFileInformationCodec.All(await FileInformationAsync(SmbFileInformationClass.All, cancellationToken).ConfigureAwait(false));
+    {
+        return SmbFileInformationCodec.All(await FileInformationAsync(SmbFileInformationClass.All, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>读取 FileInternalInformation 中的文件系统 64 位索引。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>内部文件索引，不是 SMB 句柄。</returns>
     public async Task<ulong> GetInternalFileIndexAsync(CancellationToken cancellationToken = default)
-        => Wire.U64(await FileInformationAsync(SmbFileInformationClass.Internal, cancellationToken).ConfigureAwait(false), 0);
+    {
+        return Wire.U64(await FileInformationAsync(SmbFileInformationClass.Internal, cancellationToken).ConfigureAwait(false), 0);
+    }
 
     /// <summary>读取 FileEaInformation 的 EA 总字节数。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>服务端报告的 EA 大小。</returns>
     public async Task<uint> GetExtendedAttributeSizeAsync(CancellationToken cancellationToken = default)
-        => Wire.U32(await FileInformationAsync(SmbFileInformationClass.Ea, cancellationToken).ConfigureAwait(false), 0);
+    {
+        return Wire.U32(await FileInformationAsync(SmbFileInformationClass.Ea, cancellationToken).ConfigureAwait(false), 0);
+    }
 
     /// <summary>查询 FileAlternateNameInformation 中的短文件名。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>服务端存储的短名称；不支持时保留服务器错误。</returns>
     public async Task<string> GetAlternateNameAsync(CancellationToken cancellationToken = default)
-        => SmbFileInformationCodec.Name(await FileInformationAsync(SmbFileInformationClass.AlternateName, cancellationToken).ConfigureAwait(false));
+    {
+        return SmbFileInformationCodec.Name(await FileInformationAsync(SmbFileInformationClass.AlternateName, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>查询共享相对的规范化路径；旧协议或服务器可以拒绝该可选类。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>服务器报告的规范化名称。</returns>
     public async Task<string> GetNormalizedNameAsync(CancellationToken cancellationToken = default)
-        => SmbFileInformationCodec.Name(await FileInformationAsync(SmbFileInformationClass.NormalizedName, cancellationToken).ConfigureAwait(false));
+    {
+        return SmbFileInformationCodec.Name(await FileInformationAsync(SmbFileInformationClass.NormalizedName, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>查询文件系统压缩信息，保留格式编号及各类移位。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>文件系统压缩大小和参数，不是网络压缩状态。</returns>
     public async Task<SmbFileCompressionInformation> GetCompressionInformationAsync(CancellationToken cancellationToken = default)
-        => SmbFileInformationCodec.Compression(await FileInformationAsync(SmbFileInformationClass.Compression, cancellationToken).ConfigureAwait(false));
+    {
+        return SmbFileInformationCodec.Compression(await FileInformationAsync(SmbFileInformationClass.Compression, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>查询适用于网络打开操作的时间、大小和属性。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>网络打开信息模型。</returns>
     public async Task<SmbNetworkOpenInformation> GetNetworkOpenInformationAsync(CancellationToken cancellationToken = default)
-        => SmbFileInformationCodec.NetworkOpen(await FileInformationAsync(SmbFileInformationClass.NetworkOpen, cancellationToken).ConfigureAwait(false));
+    {
+        return SmbFileInformationCodec.NetworkOpen(await FileInformationAsync(SmbFileInformationClass.NetworkOpen, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>查询 FileIdInformation，保留卷序列号和全部 128 位 ID。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>文件系统标识，不具备 durable handle 恢复语义。</returns>
     public async Task<SmbFileIdentity> GetFileIdentityAsync(CancellationToken cancellationToken = default)
-        => SmbFileInformationCodec.Identity(await FileInformationAsync(SmbFileInformationClass.Id, cancellationToken).ConfigureAwait(false));
+    {
+        return SmbFileInformationCodec.Identity(await FileInformationAsync(SmbFileInformationClass.Id, cancellationToken).ConfigureAwait(false));
+    }
 
     /// <summary>读取 FileAttributeTagInformation 的属性及重解析标签。</summary>
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>文件属性和原始标签。</returns>
     public async Task<SmbFileAttributeTag> GetAttributeTagAsync(CancellationToken cancellationToken = default)
     {
-        var data = await FileInformationAsync(SmbFileInformationClass.AttributeTag, cancellationToken).ConfigureAwait(false);
+        byte[] data = await FileInformationAsync(SmbFileInformationClass.AttributeTag, cancellationToken).ConfigureAwait(false);
         return new((FileAttributes)Wire.U32(data, 0), Wire.U32(data, 4));
     }
 
@@ -126,14 +150,16 @@ public sealed partial class SmbFileHandle
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>当前服务端文件模式。</returns>
     public async Task<SmbFileMode> GetFileModeAsync(CancellationToken cancellationToken = default)
-        => (SmbFileMode)Wire.U32(await FileInformationAsync(SmbFileInformationClass.Mode, cancellationToken).ConfigureAwait(false), 0);
+    {
+        return (SmbFileMode)Wire.U32(await FileInformationAsync(SmbFileInformationClass.Mode, cancellationToken).ConfigureAwait(false), 0);
+    }
 
     /// <summary>查询服务器游标；普通 SMB 读写使用显式偏移，因此服务器可以报告零。</summary>
     /// <param name="cancellationToken">取消等待和服务器请求的令牌。</param>
     /// <returns>非负的服务器游标；它与 SmbFileStream.Position 独立。</returns>
     public async Task<long> GetServerPositionAsync(CancellationToken cancellationToken = default)
     {
-        var value = Wire.I64(await FileInformationAsync(SmbFileInformationClass.Position, cancellationToken).ConfigureAwait(false), 0);
+        long value = Wire.I64(await FileInformationAsync(SmbFileInformationClass.Position, cancellationToken).ConfigureAwait(false), 0);
         return value >= 0 ? value : throw new SmbProtocolException("The server returned a negative file position.");
     }
 
@@ -158,7 +184,8 @@ public sealed partial class SmbFileHandle
         if (((uint)mode & ~0x36u) != 0 || (mode & (SmbFileMode.SynchronousIoAlert | SmbFileMode.SynchronousIoNonAlert)) ==
             (SmbFileMode.SynchronousIoAlert | SmbFileMode.SynchronousIoNonAlert))
             throw new ArgumentOutOfRangeException(nameof(mode));
-        var data = new byte[4]; Wire.Put32(data, 0, (uint)mode);
+        byte[] data = new byte[4];
+        Wire.Put32(data, 0, (uint)mode);
         return SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.Mode, data, cancellationToken: cancellationToken);
     }
 
@@ -170,7 +197,8 @@ public sealed partial class SmbFileHandle
     public Task SetServerPositionAsync(long position, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(position);
-        var data = new byte[8]; Wire.PutI64(data, 0, position);
+        byte[] data = new byte[8];
+        Wire.PutI64(data, 0, position);
         return SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.Position, data, cancellationToken: cancellationToken);
     }
 
@@ -181,7 +209,8 @@ public sealed partial class SmbFileHandle
     public Task SetValidDataLengthAsync(long length, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(length);
-        var data = new byte[8]; Wire.PutI64(data, 0, length);
+        byte[] data = new byte[8];
+        Wire.PutI64(data, 0, length);
         return SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.ValidDataLength, data, cancellationToken: cancellationToken);
     }
 
@@ -191,8 +220,10 @@ public sealed partial class SmbFileHandle
     /// <param name="cancellationToken">取消等待和网络操作的令牌。请求已发送后取消不会回滚服务器可能已执行的修改。</param>
     /// <returns>服务端确认后的任务；8.3 规则和权限仍由服务端验证。</returns>
     public Task SetShortNameAsync(string shortName, CancellationToken cancellationToken = default)
-        => SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.ShortName,
-            SmbFileInformationCodec.EncodeShortName(shortName), cancellationToken: cancellationToken);
+    {
+        return SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.ShortName,
+                SmbFileInformationCodec.EncodeShortName(shortName), cancellationToken: cancellationToken);
+    }
 
 
     /// <summary>发送 FILE_DISPOSITION_INFORMATION_EX，以显式标志控制普通或 POSIX 删除行为。</summary>
@@ -201,8 +232,10 @@ public sealed partial class SmbFileHandle
     /// <returns>服务器确认扩展删除设置后的任务。</returns>
     public Task SetDispositionAsync(SmbDispositionFlags flags, CancellationToken cancellationToken = default)
     {
-        if (((uint)flags & ~0x1Fu) != 0) throw new ArgumentOutOfRangeException(nameof(flags));
-        var data = new byte[4]; Wire.Put32(data, 0, (uint)flags);
+        if (((uint)flags & ~0x1Fu) != 0)
+            throw new ArgumentOutOfRangeException(nameof(flags));
+        byte[] data = new byte[4];
+        Wire.Put32(data, 0, (uint)flags);
         return SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.DispositionEx, data, cancellationToken: cancellationToken);
     }
 
@@ -215,7 +248,7 @@ public sealed partial class SmbFileHandle
     public async Task RenameExtendedAsync(string destination, SmbRenameFlags flags = SmbRenameFlags.None,
         CancellationToken cancellationToken = default)
     {
-        var data = SmbFileInformationCodec.EncodeRename(destination, flags);
+        byte[] data = SmbFileInformationCodec.EncodeRename(destination, flags);
         await SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.RenameEx, data,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         Path = SmbPath.Normalize(destination);
@@ -237,10 +270,13 @@ public sealed partial class SmbFileHandle
     /// <returns>服务端接受管道模式后的任务。</returns>
     public Task SetPipeInformationAsync(SmbPipeInformation information, CancellationToken cancellationToken = default)
     {
-        EnsurePipe(); ArgumentNullException.ThrowIfNull(information);
+        EnsurePipe();
+        ArgumentNullException.ThrowIfNull(information);
         if (!Enum.IsDefined(information.ReadMode) || !Enum.IsDefined(information.CompletionMode))
             throw new ArgumentException("Invalid named-pipe mode.", nameof(information));
-        var data = new byte[8]; Wire.Put32(data, 0, (uint)information.ReadMode); Wire.Put32(data, 4, (uint)information.CompletionMode);
+        byte[] data = new byte[8];
+        Wire.Put32(data, 0, (uint)information.ReadMode);
+        Wire.Put32(data, 4, (uint)information.CompletionMode);
         return SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.Pipe, data, cancellationToken: cancellationToken);
     }
 
@@ -270,30 +306,31 @@ public sealed partial class SmbFileHandle
     public async Task<SmbExtendedAttributePage> GetExtendedAttributesPageAsync(SmbExtendedAttributeQuery? query = null,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfClosed(); query ??= new();
+        ThrowIfClosed();
+        query ??= new();
         if (query.StartIndex == 0 || (query.StartIndex is not null && query.Names is { Count: > 0 }))
             throw new ArgumentException("Specify EA names or a nonzero EA index, not both.", nameof(query));
         if (query.BufferSize < 1 || query.BufferSize > MaximumTransactionCapacity)
             throw new ArgumentOutOfRangeException(nameof(query));
-        var input = query.Names is { Count: > 0 } names ? SmbFileInformationCodec.EncodeEaNames(names, MaximumTransactionCapacity) : [];
+        byte[] input = query.Names is { Count: > 0 } names ? SmbFileInformationCodec.EncodeEaNames(names, MaximumTransactionCapacity) : [];
         await extendedAttributeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var indexed = input.Length == 0;
+            bool indexed = input.Length == 0;
             // EA 索引放在 AdditionalInformation，不能放进输入缓冲区；后者属于名称筛选链。
             // 使用明确的一基索引，使扩容重试不受服务端 Open.CurrentEaIndex 是否已推进的影响。
-            var index = query.StartIndex ?? (query.RestartScan ? 1u : nextExtendedAttributeIndex);
+            uint index = query.StartIndex ?? (query.RestartScan ? 1u : nextExtendedAttributeIndex);
             if (indexed && query.StartIndex is null && !query.RestartScan && extendedAttributeScanComplete)
                 return new([], false);
-            var flags = (query.ReturnSingleEntry ? 2u : 0) | (indexed ? 4u : 0);
-            var size = query.BufferSize;
+            uint flags = (query.ReturnSingleEntry ? 2u : 0) | (indexed ? 4u : 0);
+            int size = query.BufferSize;
             while (true)
             {
-                var result = await QueryInfoCoreAsync(SmbInfoType.File, (byte)SmbFileInformationClass.FullEa,
+                (byte[]? Data, SmbStatus Status) = await QueryInfoCoreAsync(SmbInfoType.File, (byte)SmbFileInformationClass.FullEa,
                     size, indexed ? index : 0, input, flags, cancellationToken, SmbStatus.BufferOverflow,
                     SmbStatus.BufferTooSmall, (SmbStatus)0x80000012, (SmbStatus)0xC0000051, (SmbStatus)0xC0000052).ConfigureAwait(false);
-                var truncated = result.Status == SmbStatus.BufferTooSmall ||
-                    (result.Status == SmbStatus.BufferOverflow && (result.Data.Length == 0 || SmbFileInformationCodec.ContainsTruncatedEa(result.Data)));
+                bool truncated = Status == SmbStatus.BufferTooSmall ||
+                    (Status == SmbStatus.BufferOverflow && (Data.Length == 0 || SmbFileInformationCodec.ContainsTruncatedEa(Data)));
                 if (truncated)
                 {
                     if (!query.AllowBufferGrowth || size >= MaximumTransactionCapacity)
@@ -303,9 +340,9 @@ public sealed partial class SmbFileHandle
                     size = (int)Math.Min(MaximumTransactionCapacity, Math.Max((long)size * 2, 65798));
                     continue;
                 }
-                var entries = SmbFileInformationCodec.ExtendedAttributes(result.Data);
-                var more = result.Status == SmbStatus.BufferOverflow ||
-                    (query.ReturnSingleEntry && result.Status == SmbStatus.Success && entries.Count != 0);
+                IReadOnlyList<SmbExtendedAttribute> entries = SmbFileInformationCodec.ExtendedAttributes(Data);
+                bool more = Status == SmbStatus.BufferOverflow ||
+                    (query.ReturnSingleEntry && Status == SmbStatus.Success && entries.Count != 0);
                 if (indexed)
                 {
                     // 只有完整解码之后才推进本地索引；异常和取消不会跳过尚未交付的 EA。
@@ -315,7 +352,10 @@ public sealed partial class SmbFileHandle
                 return new(entries, more);
             }
         }
-        finally { extendedAttributeGate.Release(); }
+        finally
+        {
+            _ = extendedAttributeGate.Release();
+        }
     }
 
 
@@ -328,10 +368,16 @@ public sealed partial class SmbFileHandle
         uint index = 1;
         while (true)
         {
-            var page = await GetExtendedAttributesPageAsync(new() { StartIndex = index }, cancellationToken).ConfigureAwait(false);
-            foreach (var entry in page.Entries) yield return entry;
-            if (!page.HasMoreData) yield break;
-            if (page.Entries.Count == 0) throw new SmbProtocolException("An EA query did not advance.");
+            SmbExtendedAttributePage page = await GetExtendedAttributesPageAsync(new()
+            {
+                StartIndex = index
+            }, cancellationToken).ConfigureAwait(false);
+            foreach (SmbExtendedAttribute entry in page.Entries)
+                yield return entry;
+            if (!page.HasMoreData)
+                yield break;
+            if (page.Entries.Count == 0)
+                throw new SmbProtocolException("An EA query did not advance.");
             index = checked(index + (uint)page.Entries.Count);
         }
     }
@@ -343,8 +389,10 @@ public sealed partial class SmbFileHandle
     /// <returns>服务端确认全部 EA 设置后的任务。</returns>
     /// <remarks>超过单 credit 的最大值需要服务器支持多 credit 和足够事务容量；不会拆分成有歧义的部分修改。</remarks>
     public Task SetExtendedAttributesAsync(IReadOnlyList<SmbExtendedAttribute> attributes, CancellationToken cancellationToken = default)
-        => SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.FullEa,
-            SmbFileInformationCodec.EncodeExtendedAttributes(attributes, MaximumTransactionCapacity), cancellationToken: cancellationToken);
+    {
+        return SetInfoAsync(SmbInfoType.File, (byte)SmbFileInformationClass.FullEa,
+                SmbFileInformationCodec.EncodeExtendedAttributes(attributes, MaximumTransactionCapacity), cancellationToken: cancellationToken);
+    }
 
     /// <summary>使用标准单 credit 页预算，以选定的目录信息类执行一次 QUERY_DIRECTORY。</summary>
     /// <param name="pattern">不含路径分隔符的单级名称搜索模式。</param>
@@ -359,7 +407,8 @@ public sealed partial class SmbFileHandle
         SmbDirectoryInformationClass informationClass = SmbDirectoryInformationClass.Directory,
         bool restart = false, bool returnSingleEntry = false, bool reopen = false,
         uint? fileIndex = null, CancellationToken cancellationToken = default)
-        => QueryDirectoryPageAsync(new SmbDirectoryQuery
+    {
+        return QueryDirectoryPageAsync(new SmbDirectoryQuery
         {
             Pattern = pattern,
             InformationClass = informationClass,
@@ -368,6 +417,7 @@ public sealed partial class SmbFileHandle
             Reopen = reopen,
             FileIndex = fileIndex
         }, cancellationToken);
+    }
 
     /// <summary>按完整目录查询选项发送请求，允许在支持多 credit 的连接上显式选择更大的结果缓冲区。</summary>
     /// <param name="query">名称模式、信息类、扫描标志和输出预算。</param>
@@ -376,27 +426,38 @@ public sealed partial class SmbFileHandle
     public async Task<SmbDirectoryPage> QueryDirectoryPageAsync(SmbDirectoryQuery query,
         CancellationToken cancellationToken = default)
     {
-        ThrowIfClosed(); ArgumentNullException.ThrowIfNull(query);
-        if (!IsDirectory) throw new InvalidOperationException("Directory queries require a directory handle.");
+        ThrowIfClosed();
+        ArgumentNullException.ThrowIfNull(query);
+        if (!IsDirectory)
+            throw new InvalidOperationException("Directory queries require a directory handle.");
         _ = SmbFileInformationCodec.DirectoryLayout(query.InformationClass);
         ArgumentException.ThrowIfNullOrWhiteSpace(query.Pattern);
-        if (query.Pattern.IndexOfAny(['\\', '/', '\0', ':']) >= 0) throw new ArgumentException("The query pattern must be a single name.", nameof(query));
-        if (query.BufferSize < 1 || query.BufferSize > MaximumTransactionCapacity) throw new ArgumentOutOfRangeException(nameof(query));
-        var name = Wire.Unicode.GetBytes(query.Pattern);
-        if (name.Length > ushort.MaxValue) throw new ArgumentOutOfRangeException(nameof(query));
-        var body = new byte[32 + name.Length]; Wire.Put16(body, 0, 33);
+        if (query.Pattern.IndexOfAny(['\\', '/', '\0', ':']) >= 0)
+            throw new ArgumentException("The query pattern must be a single name.", nameof(query));
+        if (query.BufferSize < 1 || query.BufferSize > MaximumTransactionCapacity)
+            throw new ArgumentOutOfRangeException(nameof(query));
+        byte[] name = Wire.Unicode.GetBytes(query.Pattern);
+        if (name.Length > ushort.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(query));
+        byte[] body = new byte[32 + name.Length];
+        Wire.Put16(body, 0, 33);
         body[2] = (byte)query.InformationClass;
         body[3] = (byte)((query.RestartScan ? 1 : 0) | (query.ReturnSingleEntry ? 2 : 0) | (query.FileIndex.HasValue ? 4 : 0) | (query.Reopen ? 0x10 : 0));
-        Wire.Put32(body, 4, query.FileIndex ?? 0); Id.Write(body, 8);
-        Wire.Put16(body, 24, 96); Wire.Put16(body, 26, (ushort)name.Length);
-        Wire.Put32(body, 28, (uint)query.BufferSize); name.CopyTo(body, 32);
-        var response = await share.SendAsync(Command.QueryDirectory, body, cancellationToken, query.BufferSize).ConfigureAwait(false);
+        Wire.Put32(body, 4, query.FileIndex ?? 0);
+        Id.Write(body, 8);
+        Wire.Put16(body, 24, 96);
+        Wire.Put16(body, 26, (ushort)name.Length);
+        Wire.Put32(body, 28, (uint)query.BufferSize);
+        name.CopyTo(body, 32);
+        var response = await Share.SendAsync(Command.QueryDirectory, body, cancellationToken, query.BufferSize).ConfigureAwait(false);
         response.EnsureSuccess(SmbStatus.NoMoreFiles, SmbStatus.NoSuchFile, SmbStatus.BufferOverflow);
-        if (response.Status is SmbStatus.NoMoreFiles or SmbStatus.NoSuchFile) return new([], true, false);
+        if (response.Status is SmbStatus.NoMoreFiles or SmbStatus.NoSuchFile)
+            return new([], true, false);
         Wire.Structure(response.Packet, 9, 8);
-        var length = Wire.U32(response.Packet, 68);
-        if (length > query.BufferSize) throw new SmbProtocolException("A directory response exceeded its output buffer.");
-        var data = Wire.Buffer(response.Packet, Wire.U16(response.Packet, 66), length, 72);
+        uint length = Wire.U32(response.Packet, 68);
+        if (length > query.BufferSize)
+            throw new SmbProtocolException("A directory response exceeded its output buffer.");
+        byte[] data = Wire.Buffer(response.Packet, Wire.U16(response.Packet, 66), length, 72);
         return new(SmbFileInformationCodec.Directory(data, query.InformationClass), false, response.Status == SmbStatus.BufferOverflow);
     }
 
@@ -407,10 +468,10 @@ public sealed partial class SmbFileHandle
     /// <returns>未经模型解码的结果字节。</returns>
     private Task<byte[]> FileInformationAsync(SmbFileInformationClass informationClass, CancellationToken cancellationToken)
     {
-        var support = SmbFileInformationCatalog.Get(informationClass);
-        if (support.Route != SmbInformationRoute.File || !support.CanQuery)
-            throw new ArgumentException("This class is not queried with SMB2 file QUERY_INFO.", nameof(informationClass));
-        return QueryInfoAsync(SmbInfoType.File, (byte)informationClass, cancellationToken: cancellationToken);
+        SmbFileInformationSupport support = SmbFileInformationCatalog.Get(informationClass);
+        return support.Route != SmbInformationRoute.File || !support.CanQuery
+            ? throw new ArgumentException("This class is not queried with SMB2 file QUERY_INFO.", nameof(informationClass))
+            : QueryInfoAsync(SmbInfoType.File, (byte)informationClass, cancellationToken: cancellationToken);
     }
 
 
@@ -418,6 +479,7 @@ public sealed partial class SmbFileHandle
     private void EnsurePipe()
     {
         ThrowIfClosed();
-        if (!share.IsPipeShare) throw new InvalidOperationException("This operation requires an IPC named-pipe handle.");
+        if (!Share.IsPipeShare)
+            throw new InvalidOperationException("This operation requires an IPC named-pipe handle.");
     }
 }

@@ -1,4 +1,4 @@
-# MonsterSyncDrive.SMB
+# MonsterSyncDrive.Library.SMB
 
 面向 .NET 10 的 SMB2/SMB3 客户端。使用托管协议实现，不依赖系统挂载、反射序列化或动态代码生成；库没有 NuGet 包依赖，测试使用微软 MSTest。常规 TCP、文件操作、签名、加密和编解码可跨平台使用，Native AOT 通过独立工程实际发布验证。
 
@@ -8,10 +8,10 @@
 
 | 工程 | 用途 |
 | --- | --- |
-| MonsterSyncDrive.SMB | 客户端库，启用 AOT、裁剪和 XML 文档检查 |
+| MonsterSyncDrive.Library.SMB | 客户端库，启用 AOT、裁剪和 XML 文档检查 |
 | Test.MonsterSyncDrive.SMB | 密码学、编解码、真实传输回环及可选真实服务器测试 |
 | Test.MonsterSyncDrive.SMB.AotSmoke | 实际发布运行的 Native AOT 验证程序 |
-| MonsterSyncDrive.SMB.slnx | 只包含上述三个工程的独立解决方案 |
+| MonsterSyncDrive.Library.SMB.slnx | 只包含上述三个工程的独立解决方案 |
 
 测试工程位于解决方案的 `200.测试工程` 文件夹内。新增功能独立实现，不依赖其他协议工程的客户端方案。
 
@@ -41,7 +41,7 @@ SMB Direct 的内置原生后端限定于 64 位 Windows，Linux/macOS 没有随
 ## 基础连接和文件传输
 
 ```csharp
-using MonsterSyncDrive.SMB;
+using MonsterSyncDrive.Library.SMB;
 
 var credential = new SmbCredential(
     "user",
@@ -313,7 +313,7 @@ AES-CCM 取决于平台实际能力。密码不进入凭据诊断字符串；`Sm
 ## 构建和测试
 
 ```powershell
-dotnet build MonsterSyncDrive.SMB.slnx -c Release
+dotnet build MonsterSyncDrive.Library.SMB.slnx -c Release
 
 # 回归包括真实本机 TCP、IPv6、NetBIOS、QUIC 和受控 RDMA 完成提供程序。
 dotnet run --project Test.MonsterSyncDrive.SMB -c Release -- --filter 'TestCategory!=Integration' --no-progress

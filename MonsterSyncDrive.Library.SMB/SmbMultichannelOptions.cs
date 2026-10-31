@@ -23,7 +23,7 @@
  */
 using System.Net;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>为新发起的请求选择存活传输通道的策略。</summary>
 public enum SmbChannelSelectionPolicy
@@ -38,9 +38,15 @@ public enum SmbChannelSelectionPolicy
 public sealed record SmbMultichannelOptions
 {
     /// <summary>是否提供 SMB3 多通道能力并允许绑定附加连接；默认关闭。</summary>
-    public bool Enabled { get; init; }
+    public bool Enabled
+    {
+        get; init;
+    }
     /// <summary>是否在首次登录后查询服务器接口并自动绑定更多通道；凭据不会持久保存在客户端中。</summary>
-    public bool AutoConnect { get; init; }
+    public bool AutoConnect
+    {
+        get; init;
+    }
     /// <summary>会话最多同时使用的通道数，包含主通道；范围 1 至 64，默认 4。</summary>
     public int MaximumChannels { get; init; } = 4;
     /// <summary>为新请求选择通道的策略，不改变已经发送的请求所在的通道。</summary>
@@ -51,11 +57,13 @@ public sealed record SmbMultichannelOptions
     /// <exception cref="ArgumentException">通道数、策略或自动发现配置无效。</exception>
     internal SmbMultichannelOptions Validate()
     {
-        if (MaximumChannels is < 1 or > 64 || !Enum.IsDefined(SelectionPolicy))
-            throw new ArgumentException("Invalid SMB multichannel limits or selection policy.");
-        if (AutoConnect && !Enabled)
-            throw new ArgumentException("Automatic channel discovery requires multichannel to be enabled.");
-        return this with { };
+        return MaximumChannels is < 1 or > 64 || !Enum.IsDefined(SelectionPolicy)
+            ? throw new ArgumentException("Invalid SMB multichannel limits or selection policy.")
+            : AutoConnect && !Enabled
+            ? throw new ArgumentException("Automatic channel discovery requires multichannel to be enabled.")
+            : (this with
+            {
+            });
     }
 }
 

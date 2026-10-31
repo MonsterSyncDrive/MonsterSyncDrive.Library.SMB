@@ -21,9 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-using MonsterSyncDrive.SMB.Protocol;
+using MonsterSyncDrive.Library.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>文件的默认或备用数据流名称及服务器报告的逻辑、分配长度。</summary>
 /// <param name="Name">包含冒号和 :$DATA 类型后缀的服务器数据流名称。</param>
@@ -49,7 +49,7 @@ public sealed partial class SmbFileHandle
     /// <exception cref="SmbProtocolException">服务器返回的数据流链、名称或长度无效。</exception>
     public async Task<IReadOnlyList<SmbDataStreamInfo>> ListDataStreamsAsync(CancellationToken cancellationToken = default)
     {
-        var data = await QueryInfoAsync(SmbInfoType.File, 22, cancellationToken: cancellationToken).ConfigureAwait(false);
+        byte[] data = await QueryInfoAsync(SmbInfoType.File, 22, cancellationToken: cancellationToken).ConfigureAwait(false);
         return ParseDataStreams(data);
     }
 
@@ -59,19 +59,19 @@ public sealed partial class SmbFileHandle
     /// <exception cref="SmbProtocolException">记录截断、链不前进、名称格式错误或长度为负。</exception>
     internal static IReadOnlyList<SmbDataStreamInfo> ParseDataStreams(ReadOnlySpan<byte> data)
     {
-        var streams = new List<SmbDataStreamInfo>();
-        var offset = 0;
+        List<SmbDataStreamInfo> streams = new();
+        int offset = 0;
         while (offset < data.Length)
         {
             var entry = data[offset..];
-            Wire.Slice(entry, 0, 24);
-            var next = Wire.U32(entry, 0);
-            var nameLength = Wire.U32(entry, 4);
+            _ = Wire.Slice(entry, 0, 24);
+            uint next = Wire.U32(entry, 0);
+            uint nameLength = Wire.U32(entry, 4);
             // 下一个偏移相对当前记录，必须覆盖固定头和完整 UTF-16 名称，且不能指向本页末尾之外。
             if (nameLength > int.MaxValue || (next != 0 && (next % 8 != 0 || next < 24 + nameLength || next >= entry.Length)) ||
                 Wire.I64(entry, 8) < 0 || Wire.I64(entry, 16) < 0)
                 throw new SmbProtocolException("Invalid alternate data stream information.");
-            var name = Wire.Text(entry, 24, (int)nameLength);
+            string name = Wire.Text(entry, 24, (int)nameLength);
             if (!name.StartsWith(':') || !name.EndsWith(":$DATA", StringComparison.OrdinalIgnoreCase) ||
                 name.IndexOfAny(['\0', '\\', '/']) >= 0)
                 throw new SmbProtocolException("Invalid alternate data stream name.");
@@ -89,8 +89,10 @@ public sealed partial class SmbFileHandle
     /// <returns>服务器确认控制操作的任务。</returns>
     /// <exception cref="SmbException">服务器不支持稀疏文件、文件状态不允许转换或权限不足。</exception>
     public async Task SetSparseAsync(bool sparse = true, CancellationToken cancellationToken = default)
-        => _ = await IoControlAsync(0x000900C4, new byte[] { sparse ? (byte)1 : (byte)0 }, 0,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+    {
+        _ = await IoControlAsync(0x000900C4, new byte[] { sparse ? (byte)1 : (byte)0 }, 0,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>请求服务器将指定区间的数据清零；稀疏文件可能同时回收相应分配空间。</summary>
     /// <param name="offset">非负文件起始偏移。</param>
@@ -101,8 +103,9 @@ public sealed partial class SmbFileHandle
     public async Task ZeroRangeAsync(long offset, long length, CancellationToken cancellationToken = default)
     {
         ValidateRange(offset, length);
-        var input = new byte[16];
-        Wire.PutI64(input, 0, offset); Wire.PutI64(input, 8, offset + length);
+        byte[] input = new byte[16];
+        Wire.PutI64(input, 0, offset);
+        Wire.PutI64(input, 8, offset + length);
         _ = await IoControlAsync(0x000980C8, input, 0, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -119,29 +122,31 @@ public sealed partial class SmbFileHandle
         ThrowIfClosed();
         cancellationToken.ThrowIfCancellationRequested();
         ValidateRange(offset, length);
-        var input = new byte[16];
-        Wire.PutI64(input, 0, offset); Wire.PutI64(input, 8, length);
+        byte[] input = new byte[16];
+        Wire.PutI64(input, 0, offset);
+        Wire.PutI64(input, 8, length);
         // 一页至多容纳 4096 个十六字节区间；BUFFER_OVERFLOW 表示还有后续区间，不能直接当成失败丢弃本页。
-        var ranges = new List<SmbAllocatedRange>();
-        var end = offset + length;
+        List<SmbAllocatedRange> ranges = new();
+        long end = offset + length;
         while (offset < end)
         {
-            Wire.PutI64(input, 0, offset); Wire.PutI64(input, 8, end - offset);
-            var result = await IoControlCoreAsync(0x000940CF, input, 65536, true, true, cancellationToken).ConfigureAwait(false);
-            var data = result.Output;
+            Wire.PutI64(input, 0, offset);
+            Wire.PutI64(input, 8, end - offset);
+            var (Output, Overflow) = await IoControlCoreAsync(0x000940CF, input, 65536, true, true, cancellationToken).ConfigureAwait(false);
+            byte[] data = Output;
             if (data.Length % 16 != 0)
                 throw new SmbProtocolException("Invalid allocated range response length.");
-            var next = offset;
-            for (var position = 0; position < data.Length; position += 16)
+            long next = offset;
+            for (int position = 0; position < data.Length; position += 16)
             {
-                var start = Wire.I64(data, position);
-                var count = Wire.I64(data, position + 8);
+                long start = Wire.I64(data, position);
+                long count = Wire.I64(data, position + 8);
                 if (start < next || count <= 0 || start > long.MaxValue - count || start >= end)
                     throw new SmbProtocolException("Invalid or unordered allocated ranges.");
                 ranges.Add(new SmbAllocatedRange(start, count));
                 next = start + count;
             }
-            if (!result.Overflow)
+            if (!Overflow)
                 break;
             // 用本页最后一个区间末尾推进，防止异常服务器的空溢出页造成无限查询。
             if (next <= offset)
@@ -158,10 +163,10 @@ public sealed partial class SmbFileHandle
     /// <exception cref="SmbProtocolException">返回的重解析数据长度与通用头不一致。</exception>
     public async Task<SmbReparsePoint> GetReparsePointAsync(CancellationToken cancellationToken = default)
     {
-        var data = await IoControlAsync(0x000900A8, maximumOutput: 16384, cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (data.Length < 8 || Wire.U16(data, 4) != data.Length - 8)
-            throw new SmbProtocolException("Invalid reparse point data.");
-        return new SmbReparsePoint(Wire.U32(data, 0), data.AsMemory(8));
+        byte[] data = await IoControlAsync(0x000900A8, maximumOutput: 16384, cancellationToken: cancellationToken).ConfigureAwait(false);
+        return data.Length < 8 || Wire.U16(data, 4) != data.Length - 8
+            ? throw new SmbProtocolException("Invalid reparse point data.")
+            : new SmbReparsePoint(Wire.U32(data, 0), data.AsMemory(8));
     }
 
     /// <summary>设置 Microsoft 重解析标签和其原始数据，不提供第三方 GUID 头或符号链接目标编解码。</summary>
@@ -175,8 +180,9 @@ public sealed partial class SmbFileHandle
     {
         if ((tag & 0x80000000) == 0 || data.Length > 16376)
             throw new ArgumentException("Use a Microsoft reparse tag with at most 16376 bytes of reparse data.");
-        var input = new byte[8 + data.Length];
-        Wire.Put32(input, 0, tag); Wire.Put16(input, 4, (ushort)data.Length);
+        byte[] input = new byte[8 + data.Length];
+        Wire.Put32(input, 0, tag);
+        Wire.Put16(input, 4, (ushort)data.Length);
         data.Span.CopyTo(input.AsSpan(8));
         _ = await IoControlAsync(0x000900A4, input, 0, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -188,7 +194,8 @@ public sealed partial class SmbFileHandle
     /// <exception cref="SmbException">标签不匹配、对象不是重解析点或服务器拒绝操作。</exception>
     public async Task DeleteReparsePointAsync(uint tag, CancellationToken cancellationToken = default)
     {
-        var input = new byte[8]; Wire.Put32(input, 0, tag);
+        byte[] input = new byte[8];
+        Wire.Put32(input, 0, tag);
         _ = await IoControlAsync(0x000900AC, input, 0, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -206,33 +213,38 @@ public sealed partial class SmbFileHandle
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(destination);
-        ThrowIfClosed(); destination.ThrowIfClosed();
-        ValidateRange(sourceOffset, length); ValidateRange(destinationOffset, length);
-        if (!ReferenceEquals(share.Client, destination.share.Client))
+        ThrowIfClosed();
+        destination.ThrowIfClosed();
+        ValidateRange(sourceOffset, length);
+        ValidateRange(destinationOffset, length);
+        if (!ReferenceEquals(Share.Client, destination.Share.Client))
             throw new ArgumentException("Server-side copy requires handles on the same SMB session.", nameof(destination));
-        if (Id == destination.Id && ReferenceEquals(share, destination.share))
+        if (Id == destination.Id && ReferenceEquals(Share, destination.Share))
             throw new ArgumentException("Source and destination handles must differ.", nameof(destination));
         // 先从源句柄获取会话内的 24 字节 resume key，再在目标句柄上发送复制控制请求。
-        var resume = await IoControlAsync(0x00140078, maximumOutput: 32, cancellationToken: cancellationToken).ConfigureAwait(false);
-        Wire.Slice(resume, 0, 24);
+        byte[] resume = await IoControlAsync(0x00140078, maximumOutput: 32, cancellationToken: cancellationToken).ConfigureAwait(false);
+        _ = Wire.Slice(resume, 0, 24);
         uint chunkSize = 1024 * 1024;
-        var limitRetries = 0;
+        int limitRetries = 0;
         while (length > 0)
         {
-            var count = (uint)Math.Min(length, chunkSize);
-            var input = new byte[56];
+            uint count = (uint)Math.Min(length, chunkSize);
+            byte[] input = new byte[56];
             resume.AsSpan(0, 24).CopyTo(input);
             Wire.Put32(input, 24, 1);
             Wire.PutI64(input, 32, sourceOffset);
             Wire.PutI64(input, 40, destinationOffset);
             Wire.Put32(input, 48, count);
             byte[] output;
-            try { output = await destination.IoControlAsync(0x001480F2, input, 12, cancellationToken: cancellationToken).ConfigureAwait(false); }
+            try
+            {
+                output = await destination.IoControlAsync(0x001480F2, input, 12, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
             // 某些服务器通过 INVALID_PARAMETER 的 12 字节数据报告允许的复制块上限。
             // 只接受严格减小的上限，并限制调整次数；已完成的块绝不重复发送。
             catch (SmbException ex) when (ex.Status == SmbStatus.InvalidParameter && ex.ErrorData.Length == 12 && limitRetries++ < 4)
             {
-                var maximumChunk = Math.Min(Wire.U32(ex.ErrorData.Span, 4), Wire.U32(ex.ErrorData.Span, 8));
+                uint maximumChunk = Math.Min(Wire.U32(ex.ErrorData.Span, 4), Wire.U32(ex.ErrorData.Span, 8));
                 if (Wire.U32(ex.ErrorData.Span, 0) == 0 || maximumChunk == 0 || maximumChunk >= count)
                     throw;
                 chunkSize = maximumChunk;
@@ -240,7 +252,9 @@ public sealed partial class SmbFileHandle
             }
             if (output.Length != 12 || Wire.U32(output, 0) != 1 || Wire.U32(output, 4) != 0 || Wire.U32(output, 8) != count)
                 throw new SmbProtocolException("The server did not complete the requested copy chunk.");
-            sourceOffset += count; destinationOffset += count; length -= count;
+            sourceOffset += count;
+            destinationOffset += count;
+            length -= count;
         }
     }
 

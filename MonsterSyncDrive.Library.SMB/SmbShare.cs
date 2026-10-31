@@ -21,11 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>已连接的磁盘或 IPC 共享；释放时关闭其拥有的文件句柄，并释放树连接引用。</summary>
 public sealed partial class SmbShare : IAsyncDisposable
@@ -37,21 +37,39 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <summary>以原子状态阻止新操作和重复释放共享。</summary>
     private int disposed;
     /// <summary>服务器分配的树标识符，引用同一底层树连接的对象共享此值。</summary>
-    internal uint TreeId { get; }
+    internal uint TreeId
+    {
+        get;
+    }
     /// <summary>不包含服务器前缀和路径的共享名称。</summary>
-    public string Name { get; }
+    public string Name
+    {
+        get;
+    }
     /// <summary>服务器是否将此树连接声明为磁盘共享。</summary>
     public bool IsDiskShare => ShareType == 1;
     /// <summary>服务器是否将此树连接声明为命名管道共享。</summary>
     public bool IsPipeShare => ShareType == 2;
     /// <summary>原始 SMB2 共享类型：磁盘为 1、管道为 2、打印机为 3。</summary>
-    public byte ShareType { get; }
+    public byte ShareType
+    {
+        get;
+    }
     /// <summary>TREE_CONNECT 返回的未经修改的 SMB2 共享标志。</summary>
-    public uint Flags { get; }
+    public uint Flags
+    {
+        get;
+    }
     /// <summary>TREE_CONNECT 返回的未经修改的共享能力标志。</summary>
-    public uint Capabilities { get; }
+    public uint Capabilities
+    {
+        get;
+    }
     /// <summary>服务器为当前认证身份返回的共享级最大访问权限掩码。</summary>
-    public SmbAccessMask MaximumAccess { get; }
+    public SmbAccessMask MaximumAccess
+    {
+        get;
+    }
     /// <summary>此树连接是否要求 SMB 加密，该要求独立于客户端的偏好策略。</summary>
     public bool EncryptionRequired => (Flags & 0x8000) != 0;
     /// <summary>所属会话，供文件句柄和内部协议扩展调用。</summary>
@@ -67,8 +85,13 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <param name="maximumAccess">当前身份对应的共享级访问掩码。</param>
     internal SmbShare(SmbClient client, uint treeId, string name, byte shareType, uint flags, uint capabilities, SmbAccessMask maximumAccess)
     {
-        this.client = client; TreeId = treeId; Name = name; ShareType = shareType;
-        Flags = flags; Capabilities = capabilities; MaximumAccess = maximumAccess;
+        this.client = client;
+        TreeId = treeId;
+        Name = name;
+        ShareType = shareType;
+        Flags = flags;
+        Capabilities = capabilities;
+        MaximumAccess = maximumAccess;
     }
 
     /// <summary>打开或创建文件、目录或管道，并校验返回的标识符和机会锁授予级别。</summary>
@@ -81,7 +104,9 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <exception cref="SmbProtocolException">对端复用了仍在使用的 FileId，或返回了无效授予级别。</exception>
     /// <remarks>应用程序依赖机会锁进行缓存时，必须在本次调用之前配置缓存处理程序。</remarks>
     public Task<SmbFileHandle> OpenFileAsync(string path, SmbOpenOptions? options = null, CancellationToken cancellationToken = default)
-        => OpenFileCoreAsync(path, options, quotaControl: false, cancellationToken);
+    {
+        return OpenFileCoreAsync(path, options, quotaControl: false, cancellationToken);
+    }
 
     /// <summary>复用统一的 CREATE、机会锁跟踪和句柄登记流程；只有固定配额索引允许特殊流类型。</summary>
     /// <param name="path">普通共享相对路径，或内部专用配额控制流常量。</param>
@@ -100,7 +125,8 @@ public sealed partial class SmbShare : IAsyncDisposable
             if (!IsDiskShare || !path.Equals(QuotaControlPath, StringComparison.Ordinal))
                 throw new ArgumentException("Quota control requires the reserved index stream on a disk share.", nameof(path));
         }
-        else path = SmbPath.Normalize(path);
+        else
+            path = SmbPath.Normalize(path);
         options ??= new SmbOpenOptions();
         SmbOpenSemantics.Validate(options);
         if (!Enum.IsDefined(options.Disposition) || (options.ShareAccess & ~SmbShareAccess.All) != 0 ||
@@ -110,8 +136,8 @@ public sealed partial class SmbShare : IAsyncDisposable
             throw new ArgumentException("Invalid file open options.", nameof(options));
         if ((options.CreateOptions & SmbCreateOptions.OpenByFileId) != 0)
             throw new ArgumentException("OpenByFileId requires a binary file identifier and cannot be used with a path.", nameof(options));
-        var name = Wire.Unicode.GetBytes(path);
-        var body = new byte[56 + Math.Max(1, name.Length)];
+        byte[] name = Wire.Unicode.GetBytes(path);
+        byte[] body = new byte[56 + Math.Max(1, name.Length)];
         Wire.Put16(body, 0, 57);
         body[3] = (byte)options.RequestedOplockLevel;
         Wire.Put32(body, 4, 2); // SecurityImpersonation：使用模拟级别，不请求身份委派。
@@ -128,15 +154,23 @@ public sealed partial class SmbShare : IAsyncDisposable
         client.BeginOplockOpen();
         try
         {
-            var response = await SendAsync(Command.Create, body, cancellationToken).ConfigureAwait(false);
+            Response response = await SendAsync(Command.Create, body, cancellationToken).ConfigureAwait(false);
             response.EnsureSuccess();
             Wire.Structure(response.Packet, 89, 88);
             var id = SmbFileId.Read(response.Packet, 128);
             var handle = new SmbFileHandle(this, id, path, options, response.Packet);
-            if (quotaControl) handle.InitializeQuotaControlHandle();
+            if (quotaControl)
+                handle.InitializeQuotaControlHandle();
             // 只发布已经校验的授予级别；服务器意外返回更强级别不能成为应用程序缓存的依据。
-            try { handle.InitializeOplock(response.Packet[66]); }
-            catch (SmbProtocolException error) { client.Abort(error); throw; }
+            try
+            {
+                handle.InitializeOplock(response.Packet[66]);
+            }
+            catch (SmbProtocolException error)
+            {
+                client.Abort(error);
+                throw;
+            }
             if (!handles.TryAdd(id, handle))
             {
                 client.Abort(new SmbProtocolException("The server reused a live SMB file ID."));
@@ -147,7 +181,10 @@ public sealed partial class SmbShare : IAsyncDisposable
                 handle.InvalidateOplock();
             return handle;
         }
-        finally { client.EndOplockOpen(); }
+        finally
+        {
+            client.EndOplockOpen();
+        }
     }
 
     /// <summary>将磁盘文件打开为可定位的 Stream，支持同步和异步 IO。</summary>
@@ -187,7 +224,7 @@ public sealed partial class SmbShare : IAsyncDisposable
                 _ => throw new ArgumentOutOfRangeException(nameof(mode))
             }
         };
-        var handle = await OpenFileAsync(path, options, cancellationToken).ConfigureAwait(false);
+        SmbFileHandle handle = await OpenFileAsync(path, options, cancellationToken).ConfigureAwait(false);
         return new SmbFileStream(handle, access, mode == FileMode.Append);
     }
 
@@ -197,7 +234,7 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <returns>将服务器 FileAllInformation 映射到公开元数据模型后的结果。</returns>
     public async Task<SmbFileInfo> GetInfoAsync(string path, CancellationToken cancellationToken = default)
     {
-        await using var handle = await OpenMetadataAsync(path, SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
+        await using SmbFileHandle handle = await OpenMetadataAsync(path, SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
         return await handle.GetInfoAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -210,10 +247,13 @@ public sealed partial class SmbShare : IAsyncDisposable
     {
         try
         {
-            await using var handle = await OpenMetadataAsync(path, SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
+            await using SmbFileHandle handle = await OpenMetadataAsync(path, SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
             return true;
         }
-        catch (SmbException ex) when (ex.IsNotFound) { return false; }
+        catch (SmbException ex) when (ex.IsNotFound)
+        {
+            return false;
+        }
     }
 
     /// <summary>逐页返回全部 FileDirectoryInformation 条目，并排除当前目录和父目录项。</summary>
@@ -231,23 +271,23 @@ public sealed partial class SmbShare : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(searchPattern);
         if (searchPattern.IndexOfAny(['\\', '/', '\0', ':']) >= 0)
             throw new ArgumentException("A search pattern must be a single name pattern.", nameof(searchPattern));
-        await using var handle = await OpenFileAsync(directory, new SmbOpenOptions
+        await using SmbFileHandle handle = await OpenFileAsync(directory, new SmbOpenOptions
         {
             Access = SmbAccessMask.ReadData | SmbAccessMask.ReadAttributes,
             CreateOptions = SmbCreateOptions.DirectoryFile,
             Attributes = FileAttributes.Directory
         }, cancellationToken).ConfigureAwait(false);
-        var restart = true;
+        bool restart = true;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var entries = await handle.QueryDirectoryAsync(searchPattern, restart, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<SmbDirectoryEntry>? entries = await handle.QueryDirectoryAsync(searchPattern, restart, cancellationToken).ConfigureAwait(false);
             restart = false;
             if (entries is null)
                 yield break;
             if (entries.Count == 0)
                 throw new SmbProtocolException("A directory query succeeded without entries or an end-of-search status.");
-            foreach (var entry in entries)
+            foreach (SmbDirectoryEntry entry in entries)
                 if (entry.Name is not ("." or ".."))
                     yield return entry;
         }
@@ -263,12 +303,12 @@ public sealed partial class SmbShare : IAsyncDisposable
         path = SmbPath.Normalize(path);
         if (path.Length == 0)
             return;
-        var parts = recursive ? path.Split('\\') : [path];
-        var current = "";
-        foreach (var part in parts)
+        string[] parts = recursive ? path.Split('\\') : [path];
+        string current = "";
+        foreach (string part in parts)
         {
             current = SmbPath.Combine(current, part);
-            await using var handle = await OpenFileAsync(current, new SmbOpenOptions
+            await using SmbFileHandle handle = await OpenFileAsync(current, new SmbOpenOptions
             {
                 Access = SmbAccessMask.ReadAttributes,
                 Disposition = SmbCreateDisposition.OpenIf,
@@ -286,7 +326,7 @@ public sealed partial class SmbShare : IAsyncDisposable
     public async Task DeleteFileAsync(string path, CancellationToken cancellationToken = default)
     {
         EnsureNotRoot(path);
-        await using var handle = await OpenFileAsync(path, new SmbOpenOptions
+        await using SmbFileHandle handle = await OpenFileAsync(path, new SmbOpenOptions
         {
             Access = SmbAccessMask.Delete,
             CreateOptions = SmbCreateOptions.NonDirectoryFile | SmbCreateOptions.OpenReparsePoint
@@ -307,21 +347,21 @@ public sealed partial class SmbShare : IAsyncDisposable
         path = SmbPath.Normalize(path);
         EnsureNotRoot(path);
         // 向下遍历之前先检查目标对象自身，不跟随重解析点。
-        var info = await GetInfoAsync(path, cancellationToken).ConfigureAwait(false);
+        SmbFileInfo info = await GetInfoAsync(path, cancellationToken).ConfigureAwait(false);
         if (!info.IsDirectory)
             throw new IOException("The path is not a directory.");
         if (recursive && (info.Attributes & FileAttributes.ReparsePoint) == 0)
         {
-            await foreach (var entry in EnumerateDirectoryAsync(path, cancellationToken: cancellationToken).ConfigureAwait(false))
+            await foreach (SmbDirectoryEntry? entry in EnumerateDirectoryAsync(path, cancellationToken: cancellationToken).ConfigureAwait(false))
             {
-                var child = SmbPath.Combine(path, entry.Name);
+                string child = SmbPath.Combine(path, entry.Name);
                 if (entry.IsDirectory)
                     await DeleteDirectoryAsync(child, !entry.IsReparsePoint, cancellationToken).ConfigureAwait(false);
                 else
                     await DeleteFileAsync(child, cancellationToken).ConfigureAwait(false);
             }
         }
-        await using var handle = await OpenFileAsync(path, new SmbOpenOptions
+        await using SmbFileHandle handle = await OpenFileAsync(path, new SmbOpenOptions
         {
             Access = SmbAccessMask.Delete,
             CreateOptions = SmbCreateOptions.DirectoryFile | SmbCreateOptions.OpenReparsePoint,
@@ -340,7 +380,7 @@ public sealed partial class SmbShare : IAsyncDisposable
     {
         EnsureNotRoot(source);
         EnsureNotRoot(destination);
-        await using var handle = await OpenMetadataAsync(source, SmbAccessMask.Delete, cancellationToken).ConfigureAwait(false);
+        await using SmbFileHandle handle = await OpenMetadataAsync(source, SmbAccessMask.Delete, cancellationToken).ConfigureAwait(false);
         await handle.RenameAsync(destination, replaceIfExists, cancellationToken).ConfigureAwait(false);
     }
 
@@ -355,7 +395,7 @@ public sealed partial class SmbShare : IAsyncDisposable
     public async Task SetAttributesAsync(string path, FileAttributes attributes, DateTimeOffset? creationTime = null,
         DateTimeOffset? lastAccessTime = null, DateTimeOffset? lastWriteTime = null, CancellationToken cancellationToken = default)
     {
-        await using var handle = await OpenMetadataAsync(path, SmbAccessMask.WriteAttributes, cancellationToken).ConfigureAwait(false);
+        await using SmbFileHandle handle = await OpenMetadataAsync(path, SmbAccessMask.WriteAttributes, cancellationToken).ConfigureAwait(false);
         await handle.SetBasicInfoAsync(attributes, creationTime, lastAccessTime, lastWriteTime,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -365,13 +405,13 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <returns>经过校验的 FileFsFullSizeInformation 数值及具有溢出检查的字节换算结果。</returns>
     public async Task<SmbFileSystemSpace> GetSpaceAsync(CancellationToken cancellationToken = default)
     {
-        await using var root = await OpenMetadataAsync("", SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
-        var data = await root.QueryInfoAsync(SmbInfoType.FileSystem, 7, cancellationToken: cancellationToken).ConfigureAwait(false);
-        Wire.Slice(data, 0, 32);
-        if (Wire.I64(data, 0) < 0 || Wire.I64(data, 8) < 0 || Wire.I64(data, 16) < 0 ||
-            Wire.U32(data, 24) == 0 || Wire.U32(data, 28) == 0)
-            throw new SmbProtocolException("Invalid SMB filesystem capacity information.");
-        return new SmbFileSystemSpace(Wire.I64(data, 0), Wire.I64(data, 8), Wire.I64(data, 16),
+        await using SmbFileHandle root = await OpenMetadataAsync("", SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
+        byte[] data = await root.QueryInfoAsync(SmbInfoType.FileSystem, 7, cancellationToken: cancellationToken).ConfigureAwait(false);
+        _ = Wire.Slice(data, 0, 32);
+        return Wire.I64(data, 0) < 0 || Wire.I64(data, 8) < 0 || Wire.I64(data, 16) < 0 ||
+            Wire.U32(data, 24) == 0 || Wire.U32(data, 28) == 0
+            ? throw new SmbProtocolException("Invalid SMB filesystem capacity information.")
+            : new SmbFileSystemSpace(Wire.I64(data, 0), Wire.I64(data, 8), Wire.I64(data, 16),
             Wire.U32(data, 24), Wire.U32(data, 28));
     }
 
@@ -380,9 +420,9 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <returns>服务器声明的卷信息。</returns>
     public async Task<SmbVolumeInfo> GetVolumeInfoAsync(CancellationToken cancellationToken = default)
     {
-        await using var root = await OpenMetadataAsync("", SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
-        var data = await root.QueryInfoAsync(SmbInfoType.FileSystem, 1, cancellationToken: cancellationToken).ConfigureAwait(false);
-        Wire.Slice(data, 0, 18);
+        await using SmbFileHandle root = await OpenMetadataAsync("", SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
+        byte[] data = await root.QueryInfoAsync(SmbInfoType.FileSystem, 1, cancellationToken: cancellationToken).ConfigureAwait(false);
+        _ = Wire.Slice(data, 0, 18);
         return new SmbVolumeInfo(Wire.Time(data, 0), Wire.U32(data, 8),
             Wire.Text(data, 18, Wire.Int32(Wire.U32(data, 12))), data[16] != 0);
     }
@@ -392,9 +432,9 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <returns>服务器声明的文件系统属性。</returns>
     public async Task<SmbFileSystemAttributes> GetFileSystemAttributesAsync(CancellationToken cancellationToken = default)
     {
-        await using var root = await OpenMetadataAsync("", SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
-        var data = await root.QueryInfoAsync(SmbInfoType.FileSystem, 5, cancellationToken: cancellationToken).ConfigureAwait(false);
-        Wire.Slice(data, 0, 12);
+        await using SmbFileHandle root = await OpenMetadataAsync("", SmbAccessMask.ReadAttributes, cancellationToken).ConfigureAwait(false);
+        byte[] data = await root.QueryInfoAsync(SmbInfoType.FileSystem, 5, cancellationToken: cancellationToken).ConfigureAwait(false);
+        _ = Wire.Slice(data, 0, 12);
         return new SmbFileSystemAttributes(Wire.U32(data, 0), Wire.Int32(Wire.U32(data, 4)),
             Wire.Text(data, 12, Wire.Int32(Wire.U32(data, 8))));
     }
@@ -413,7 +453,7 @@ public sealed partial class SmbShare : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(source);
         if (!source.CanRead)
             throw new ArgumentException("The source stream must be readable.", nameof(source));
-        await using var destination = await OpenStreamAsync(path, overwrite ? FileMode.Create : FileMode.CreateNew,
+        await using SmbFileStream destination = await OpenStreamAsync(path, overwrite ? FileMode.Create : FileMode.CreateNew,
             FileAccess.Write, FileShare.None, cancellationToken).ConfigureAwait(false);
         long? total = source.CanSeek ? source.Length - source.Position : null;
         await TransferAsync(source, destination, total, progress, cancellationToken).ConfigureAwait(false);
@@ -433,7 +473,7 @@ public sealed partial class SmbShare : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(destination);
         if (!destination.CanWrite)
             throw new ArgumentException("The destination stream must be writable.", nameof(destination));
-        await using var source = await OpenStreamAsync(path, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await using SmbFileStream source = await OpenStreamAsync(path, cancellationToken: cancellationToken).ConfigureAwait(false);
         await TransferAsync(source, destination, source.Length, progress, cancellationToken).ConfigureAwait(false);
     }
 
@@ -450,7 +490,7 @@ public sealed partial class SmbShare : IAsyncDisposable
     {
         if (string.Equals(SmbPath.Normalize(source), SmbPath.Normalize(destination), StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Source and destination must be different paths.");
-        await using var sourceStream = await OpenStreamAsync(source, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await using SmbFileStream sourceStream = await OpenStreamAsync(source, cancellationToken: cancellationToken).ConfigureAwait(false);
         await UploadAsync(destination, sourceStream, overwrite, progress, cancellationToken).ConfigureAwait(false);
     }
 
@@ -464,14 +504,14 @@ public sealed partial class SmbShare : IAsyncDisposable
     private async Task TransferAsync(Stream source, Stream destination, long? total,
         IProgress<SmbTransferProgress>? progress, CancellationToken cancellationToken)
     {
-        var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(client.Options.TransferBufferSize);
+        byte[] buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(client.Options.TransferBufferSize);
         long transferred = 0;
         try
         {
             progress?.Report(new SmbTransferProgress(0, total));
             while (true)
             {
-                var length = await source.ReadAsync(buffer.AsMemory(0, client.Options.TransferBufferSize), cancellationToken).ConfigureAwait(false);
+                int length = await source.ReadAsync(buffer.AsMemory(0, client.Options.TransferBufferSize), cancellationToken).ConfigureAwait(false);
                 if (length == 0)
                     break;
                 await destination.WriteAsync(buffer.AsMemory(0, length), cancellationToken).ConfigureAwait(false);
@@ -479,7 +519,10 @@ public sealed partial class SmbShare : IAsyncDisposable
                 progress?.Report(new SmbTransferProgress(transferred, total));
             }
         }
-        finally { System.Buffers.ArrayPool<byte>.Shared.Return(buffer, clearArray: true); }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        }
     }
 
     /// <summary>通过可用会话通道发送树连接范围内的请求，并遵守该树的加密要求。</summary>
@@ -501,7 +544,9 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <param name="cancellationToken">取消打开目标。</param>
     /// <returns>不跟随最后一级重解析点的临时句柄。</returns>
     private Task<SmbFileHandle> OpenMetadataAsync(string path, SmbAccessMask access, CancellationToken cancellationToken)
-        => OpenFileAsync(path, new SmbOpenOptions { Access = access, CreateOptions = SmbCreateOptions.OpenReparsePoint }, cancellationToken);
+    {
+        return OpenFileAsync(path, new SmbOpenOptions { Access = access, CreateOptions = SmbCreateOptions.OpenReparsePoint }, cancellationToken);
+    }
 
     /// <summary>拒绝可能删除或重命名共享根目录的操作。</summary>
     /// <param name="path">需要规范化并检查的路径。</param>
@@ -518,14 +563,14 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <returns>拥有的句柄接收通知时为 true；未知 FileId 返回 false。</returns>
     internal bool TryQueueOplockBreak(byte[] packet, bool wasEncrypted)
     {
-        var notification = SmbOplockProtocol.ReadNotification(packet);
-        if (!handles.TryGetValue(notification.Id, out var handle))
+        (SmbFileId Id, SmbOplockLevel Level) = SmbOplockProtocol.ReadNotification(packet);
+        if (!handles.TryGetValue(Id, out SmbFileHandle? handle))
             return false;
         // OPLOCK_BREAK 的 TreeId 固定为零，只有解析 FileId 后才能得知其所属共享。
         // 客户端 WhenAvailable 发送偏好不强制主动通知加密，但共享声明的加密要求始终必须执行。
         if (EncryptionRequired && !wasEncrypted)
             throw new SmbProtocolException("An unencrypted oplock notification targeted an encryption-required share.");
-        handle.QueueOplockBreak(notification.Level);
+        handle.QueueOplockBreak(Level);
         return true;
     }
 
@@ -533,13 +578,17 @@ public sealed partial class SmbShare : IAsyncDisposable
     /// <param name="error">需要交付给待完成观察者的失败原因。</param>
     internal void InvalidateOplocks(Exception error)
     {
-        foreach (var handle in handles.Values)
+        foreach (SmbFileHandle handle in handles.Values)
             handle.InvalidateOplock(error);
     }
 
     /// <summary>从共享的关闭与通知索引中移除应用程序已关闭的句柄。</summary>
     /// <param name="id">远程打开句柄标识符。</param>
-    internal void RemoveHandle(SmbFileId id) => handles.TryRemove(id, out _);
+    internal void RemoveHandle(SmbFileId id)
+    {
+        _ = handles.TryRemove(id, out _);
+    }
+
     /// <summary>拒绝使用已释放的共享或其所属会话。</summary>
     /// <exception cref="ObjectDisposedException">共享或会话已经释放。</exception>
     internal void ThrowIfDisposed()
@@ -557,10 +606,16 @@ public sealed partial class SmbShare : IAsyncDisposable
             return;
         try
         {
-            foreach (var handle in handles.Values)
-                try { await handle.DisposeAsync().ConfigureAwait(false); }
+            foreach (SmbFileHandle handle in handles.Values)
+                try
+                {
+                    await handle.DisposeAsync().ConfigureAwait(false);
+                }
                 catch (IOException) { }
         }
-        finally { await client.ReleaseShareAsync(this).ConfigureAwait(false); }
+        finally
+        {
+            await client.ReleaseShareAsync(this).ConfigureAwait(false);
+        }
     }
 }

@@ -21,10 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Text;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 
 /// <summary>标准文件信息的无反射编解码器，集中验证固定布局、长度链、UTF-16、ASCII 名称和整数边界。</summary>
@@ -36,7 +36,7 @@ internal static class SmbFileInformationCodec
     /// <returns>四类时间和文件属性。</returns>
     internal static SmbBasicInformation Basic(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 40);
+        _ = Wire.Slice(data, 0, 40);
         return new(Time(data, 0), Time(data, 8), Time(data, 16), Time(data, 24), (FileAttributes)Wire.U32(data, 32));
     }
 
@@ -46,7 +46,7 @@ internal static class SmbFileInformationCodec
     /// <returns>分配量、EOF、硬链接计数和状态。</returns>
     internal static SmbStandardInformation Standard(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 24);
+        _ = Wire.Slice(data, 0, 24);
         return new(Nonnegative(data, 0), Nonnegative(data, 8), Wire.U32(data, 16), Boolean(data, 20), Boolean(data, 21));
     }
 
@@ -57,7 +57,7 @@ internal static class SmbFileInformationCodec
     /// <remarks>固定部分为 100 字节；内嵌名称从偏移 96 的长度字段开始。</remarks>
     internal static SmbAllInformation All(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 100);
+        _ = Wire.Slice(data, 0, 100);
         return new(Basic(data), Standard(data[40..]), Wire.U64(data, 64), Wire.U32(data, 72),
             (SmbAccessMask)Wire.U32(data, 76), Nonnegative(data, 80), (SmbFileMode)Wire.U32(data, 88),
             Alignment(data[92..]), Name(data[96..]));
@@ -69,10 +69,10 @@ internal static class SmbFileInformationCodec
     /// <returns>可换算为字节边界的对齐模型。</returns>
     internal static SmbAlignmentInformation Alignment(ReadOnlySpan<byte> data)
     {
-        var mask = Wire.U32(data, 0);
-        if (mask > 511 || (mask & (mask + 1)) != 0)
-            throw new SmbProtocolException("Invalid file buffer alignment requirement.");
-        return new(mask);
+        uint mask = Wire.U32(data, 0);
+        return mask > 511 || (mask & (mask + 1)) != 0
+            ? throw new SmbProtocolException("Invalid file buffer alignment requirement.")
+            : new(mask);
     }
 
 
@@ -81,9 +81,8 @@ internal static class SmbFileInformationCodec
     /// <returns>完整名称字符串，允许规范化路径的分隔符。</returns>
     internal static string Name(ReadOnlySpan<byte> data)
     {
-        var value = Wire.Text(data, 4, Wire.Int32(Wire.U32(data, 0)));
-        if (value.Contains('\0')) throw new SmbProtocolException("A file information name contains NUL.");
-        return value;
+        string value = Wire.Text(data, 4, Wire.Int32(Wire.U32(data, 0)));
+        return value.Contains('\0') ? throw new SmbProtocolException("A file information name contains NUL.") : value;
     }
 
 
@@ -92,7 +91,7 @@ internal static class SmbFileInformationCodec
     /// <returns>压缩后大小及压缩参数。</returns>
     internal static SmbFileCompressionInformation Compression(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 16);
+        _ = Wire.Slice(data, 0, 16);
         return new(Nonnegative(data, 0), Wire.U16(data, 8), data[10], data[11], data[12]);
     }
 
@@ -102,7 +101,7 @@ internal static class SmbFileInformationCodec
     /// <returns>时间、属性、分配量和 EOF。</returns>
     internal static SmbNetworkOpenInformation NetworkOpen(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 56);
+        _ = Wire.Slice(data, 0, 56);
         return new(new(Time(data, 0), Time(data, 8), Time(data, 16), Time(data, 24), (FileAttributes)Wire.U32(data, 48)),
             Nonnegative(data, 32), Nonnegative(data, 40));
     }
@@ -113,7 +112,7 @@ internal static class SmbFileInformationCodec
     /// <returns>原样保存的文件系统标识。</returns>
     internal static SmbFileIdentity Identity(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 24);
+        _ = Wire.Slice(data, 0, 24);
         return new(Wire.U64(data, 0), new(Wire.U64(data, 8), Wire.U64(data, 16)));
     }
 
@@ -123,11 +122,11 @@ internal static class SmbFileInformationCodec
     /// <returns>管道模式。</returns>
     internal static SmbPipeInformation Pipe(ReadOnlySpan<byte> data)
     {
-        var read = (SmbPipeReadMode)Wire.U32(data, 0);
-        var completion = (SmbPipeCompletionMode)Wire.U32(data, 4);
-        if (!Enum.IsDefined(read) || !Enum.IsDefined(completion))
-            throw new SmbProtocolException("Invalid named-pipe mode.");
-        return new(read, completion);
+        SmbPipeReadMode read = (SmbPipeReadMode)Wire.U32(data, 0);
+        SmbPipeCompletionMode completion = (SmbPipeCompletionMode)Wire.U32(data, 4);
+        return !Enum.IsDefined(read) || !Enum.IsDefined(completion)
+            ? throw new SmbProtocolException("Invalid named-pipe mode.")
+            : new(read, completion);
     }
 
 
@@ -136,14 +135,14 @@ internal static class SmbFileInformationCodec
     /// <returns>管道实例、配额、数据量和状态。</returns>
     internal static SmbPipeLocalInformation PipeLocal(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 40);
-        var type = (SmbPipeType)Wire.U32(data, 0);
-        var configuration = (SmbPipeConfiguration)Wire.U32(data, 4);
-        var state = (SmbPipeState)Wire.U32(data, 32);
-        var end = (SmbPipeEnd)Wire.U32(data, 36);
-        if (!Enum.IsDefined(type) || !Enum.IsDefined(configuration) || !Enum.IsDefined(state) || !Enum.IsDefined(end))
-            throw new SmbProtocolException("Invalid named-pipe local information.");
-        return new(type, configuration, Wire.U32(data, 8), Wire.U32(data, 12), Wire.U32(data, 16),
+        _ = Wire.Slice(data, 0, 40);
+        SmbPipeType type = (SmbPipeType)Wire.U32(data, 0);
+        SmbPipeConfiguration configuration = (SmbPipeConfiguration)Wire.U32(data, 4);
+        SmbPipeState state = (SmbPipeState)Wire.U32(data, 32);
+        SmbPipeEnd end = (SmbPipeEnd)Wire.U32(data, 36);
+        return !Enum.IsDefined(type) || !Enum.IsDefined(configuration) || !Enum.IsDefined(state) || !Enum.IsDefined(end)
+            ? throw new SmbProtocolException("Invalid named-pipe local information.")
+            : new(type, configuration, Wire.U32(data, 8), Wire.U32(data, 12), Wire.U32(data, 16),
             Wire.U32(data, 20), Wire.U32(data, 24), Wire.U32(data, 28), state, end);
     }
 
@@ -153,7 +152,7 @@ internal static class SmbFileInformationCodec
     /// <returns>远程管道收集参数。</returns>
     internal static SmbPipeRemoteInformation PipeRemote(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 12);
+        _ = Wire.Slice(data, 0, 12);
         return new(TimeSpan.FromTicks(Wire.I64(data, 0)), Wire.U32(data, 8));
     }
 
@@ -164,15 +163,15 @@ internal static class SmbFileInformationCodec
     /// <remarks>每个非末尾 NextEntryOffset 必须跨过当前名称和值，不能重叠或指向缓冲区外。</remarks>
     internal static IReadOnlyList<SmbExtendedAttribute> ExtendedAttributes(ReadOnlySpan<byte> data)
     {
-        var result = new List<SmbExtendedAttribute>();
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var position = 0;
+        List<SmbExtendedAttribute> result = new();
+        HashSet<string> names = new(StringComparer.OrdinalIgnoreCase);
+        int position = 0;
         while (position < data.Length)
         {
             var remaining = data[position..];
-            Wire.Slice(remaining, 0, 8);
-            var next = Wire.U32(remaining, 0);
-            var size = checked(9 + remaining[5] + Wire.U16(remaining, 6));
+            _ = Wire.Slice(remaining, 0, 8);
+            uint next = Wire.U32(remaining, 0);
+            int size = checked(9 + remaining[5] + Wire.U16(remaining, 6));
             // 先按本条目的 NextEntryOffset 收窄切片，禁止名称或值借用下一条目的字节。
             var entry = BoundEntry(remaining, next, size, 4);
             if (entry[4] is not (0 or 0x80) || entry[8 + entry[5]] != 0)
@@ -180,12 +179,20 @@ internal static class SmbFileInformationCodec
             var rawName = entry.Slice(8, entry[5]);
             if (rawName.ContainsAnyInRange((byte)128, byte.MaxValue))
                 throw new SmbProtocolException("An extended-attribute name is not ASCII.");
-            var name = Encoding.ASCII.GetString(rawName);
-            try { ValidateEaName(name); }
-            catch (ArgumentException ex) { throw new SmbProtocolException("Invalid extended-attribute name.", ex); }
-            if (!names.Add(name)) throw new SmbProtocolException("Duplicate extended-attribute name.");
+            string name = Encoding.ASCII.GetString(rawName);
+            try
+            {
+                ValidateEaName(name);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new SmbProtocolException("Invalid extended-attribute name.", ex);
+            }
+            if (!names.Add(name))
+                throw new SmbProtocolException("Duplicate extended-attribute name.");
             result.Add(new(name, entry.Slice(9 + entry[5], Wire.U16(entry, 6)).ToArray(), entry[4] != 0));
-            if (next == 0) break;
+            if (next == 0)
+                break;
             position = checked(position + (int)next);
         }
         return result;
@@ -199,17 +206,22 @@ internal static class SmbFileInformationCodec
     /// <remarks>该方法不把完整但内容非法的记录视作需要扩容，完整内容仍由严格解析器验证。</remarks>
     internal static bool ContainsTruncatedEa(ReadOnlySpan<byte> data)
     {
-        var offset = 0;
+        int offset = 0;
         while (offset < data.Length)
         {
             var remaining = data[offset..];
-            if (remaining.Length < 8) return true;
-            var minimum = 9 + remaining[5] + Wire.U16(remaining, 6);
-            if (remaining.Length < minimum) return true;
-            var next = Wire.U32(remaining, 0);
-            if (next == 0) return false;
-            if (next % 4 != 0 || next < minimum) throw new SmbProtocolException("Invalid EA chain offset.");
-            if (next >= remaining.Length) throw new SmbProtocolException("Invalid EA chain offset.");
+            if (remaining.Length < 8)
+                return true;
+            int minimum = 9 + remaining[5] + Wire.U16(remaining, 6);
+            if (remaining.Length < minimum)
+                return true;
+            uint next = Wire.U32(remaining, 0);
+            if (next == 0)
+                return false;
+            if (next % 4 != 0 || next < minimum)
+                throw new SmbProtocolException("Invalid EA chain offset.");
+            if (next >= remaining.Length)
+                throw new SmbProtocolException("Invalid EA chain offset.");
             offset = checked(offset + (int)next);
         }
         return false;
@@ -223,33 +235,44 @@ internal static class SmbFileInformationCodec
     internal static byte[] EncodeExtendedAttributes(IReadOnlyList<SmbExtendedAttribute> attributes, int maximumLength)
     {
         ArgumentNullException.ThrowIfNull(attributes);
-        if (attributes.Count == 0) throw new ArgumentException("At least one extended attribute is required.", nameof(attributes));
-        if (attributes.Count > maximumLength / 10) throw new ArgumentOutOfRangeException(nameof(attributes), "The EA set exceeds the transaction capacity.");
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var encoded = new List<byte[]>(attributes.Count);
-        var total = 0;
-        for (var index = 0; index < attributes.Count; index++)
+        if (attributes.Count == 0)
+            throw new ArgumentException("At least one extended attribute is required.", nameof(attributes));
+        if (attributes.Count > maximumLength / 10)
+            throw new ArgumentOutOfRangeException(nameof(attributes), "The EA set exceeds the transaction capacity.");
+        HashSet<string> names = new(StringComparer.OrdinalIgnoreCase);
+        List<byte[]> encoded = new(attributes.Count);
+        int total = 0;
+        for (int index = 0; index < attributes.Count; index++)
         {
             var attribute = attributes[index] ?? throw new ArgumentException("An EA must not be null.", nameof(attributes));
             ValidateEaName(attribute.Name);
-            if (!names.Add(attribute.Name)) throw new ArgumentException("Duplicate extended-attribute name.", nameof(attributes));
-            if (attribute.Value.Length > ushort.MaxValue) throw new ArgumentOutOfRangeException(nameof(attributes), "An EA value cannot exceed 65535 bytes.");
-            var name = Encoding.ASCII.GetBytes(attribute.Name);
-            var size = 9 + name.Length + attribute.Value.Length;
-            var aligned = index == attributes.Count - 1 ? size : (size + 3) & ~3;
-            if (aligned > maximumLength - total) throw new ArgumentOutOfRangeException(nameof(attributes), "The EA set exceeds the negotiated transaction capacity.");
-            var entry = new byte[aligned];
-            if (index != attributes.Count - 1) Wire.Put32(entry, 0, (uint)aligned);
+            if (!names.Add(attribute.Name))
+                throw new ArgumentException("Duplicate extended-attribute name.", nameof(attributes));
+            if (attribute.Value.Length > ushort.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(attributes), "An EA value cannot exceed 65535 bytes.");
+            byte[] name = Encoding.ASCII.GetBytes(attribute.Name);
+            int size = 9 + name.Length + attribute.Value.Length;
+            int aligned = index == attributes.Count - 1 ? size : (size + 3) & ~3;
+            if (aligned > maximumLength - total)
+                throw new ArgumentOutOfRangeException(nameof(attributes), "The EA set exceeds the negotiated transaction capacity.");
+            byte[] entry = new byte[aligned];
+            if (index != attributes.Count - 1)
+                Wire.Put32(entry, 0, (uint)aligned);
             entry[4] = attribute.Required ? (byte)0x80 : (byte)0;
             entry[5] = (byte)name.Length;
             Wire.Put16(entry, 6, (ushort)attribute.Value.Length);
             name.CopyTo(entry, 8);
             attribute.Value.Span.CopyTo(entry.AsSpan(9 + name.Length));
-            encoded.Add(entry); total += aligned;
+            encoded.Add(entry);
+            total += aligned;
         }
-        var result = new byte[total];
-        var position = 0;
-        foreach (var entry in encoded) { entry.CopyTo(result, position); position += entry.Length; }
+        byte[] result = new byte[total];
+        int position = 0;
+        foreach (byte[] entry in encoded)
+        {
+            entry.CopyTo(result, position);
+            position += entry.Length;
+        }
         return result;
     }
 
@@ -261,21 +284,27 @@ internal static class SmbFileInformationCodec
     internal static byte[] EncodeEaNames(IReadOnlyList<string> names, int maximumLength = 65536)
     {
         ArgumentNullException.ThrowIfNull(names);
-        if (names.Count == 0) return [];
-        if (names.Count > maximumLength / 7) throw new ArgumentOutOfRangeException(nameof(names), "The EA name filter exceeds the transaction capacity.");
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        using var stream = new MemoryStream();
-        for (var index = 0; index < names.Count; index++)
+        if (names.Count == 0)
+            return [];
+        if (names.Count > maximumLength / 7)
+            throw new ArgumentOutOfRangeException(nameof(names), "The EA name filter exceeds the transaction capacity.");
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+        using MemoryStream stream = new();
+        for (int index = 0; index < names.Count; index++)
         {
             ValidateEaName(names[index]);
-            if (!seen.Add(names[index])) throw new ArgumentException("Duplicate EA filter name.", nameof(names));
-            var name = Encoding.ASCII.GetBytes(names[index]);
-            var size = 6 + name.Length;
-            var aligned = index == names.Count - 1 ? size : (size + 3) & ~3;
-            if (aligned > maximumLength - stream.Length) throw new ArgumentOutOfRangeException(nameof(names), "The EA name filter exceeds the transaction capacity.");
-            var entry = new byte[aligned];
-            if (index != names.Count - 1) Wire.Put32(entry, 0, (uint)aligned);
-            entry[4] = (byte)name.Length; name.CopyTo(entry, 5);
+            if (!seen.Add(names[index]))
+                throw new ArgumentException("Duplicate EA filter name.", nameof(names));
+            byte[] name = Encoding.ASCII.GetBytes(names[index]);
+            int size = 6 + name.Length;
+            int aligned = index == names.Count - 1 ? size : (size + 3) & ~3;
+            if (aligned > maximumLength - stream.Length)
+                throw new ArgumentOutOfRangeException(nameof(names), "The EA name filter exceeds the transaction capacity.");
+            byte[] entry = new byte[aligned];
+            if (index != names.Count - 1)
+                Wire.Put32(entry, 0, (uint)aligned);
+            entry[4] = (byte)name.Length;
+            name.CopyTo(entry, 5);
             stream.Write(entry);
         }
         return stream.ToArray();
@@ -289,18 +318,19 @@ internal static class SmbFileInformationCodec
     /// <remarks>每个名称都只在本条目的边界内解码，防止利用后续条目字节补齐伪造的字符串。</remarks>
     internal static IReadOnlyList<SmbDirectoryInformationEntry> Directory(ReadOnlySpan<byte> data, SmbDirectoryInformationClass informationClass)
     {
-        var layout = DirectoryLayout(informationClass);
-        var entries = new List<SmbDirectoryInformationEntry>();
-        var position = 0;
+        var (Header, Ea, Reparse, ShortName, Id64, Id128) = DirectoryLayout(informationClass);
+        List<SmbDirectoryInformationEntry> entries = new();
+        int position = 0;
         while (position < data.Length)
         {
             var remaining = data[position..];
-            Wire.Slice(remaining, 0, layout.Header);
-            var next = Wire.U32(remaining, 0);
-            var nameLength = Wire.Int32(Wire.U32(remaining, informationClass == SmbDirectoryInformationClass.Names ? 8 : 60));
-            if (nameLength > int.MaxValue - layout.Header) throw new SmbProtocolException("Oversized directory name.");
-            var entry = BoundEntry(remaining, next, layout.Header + nameLength, 8);
-            var name = Wire.Text(entry, layout.Header, nameLength);
+            _ = Wire.Slice(remaining, 0, Header);
+            uint next = Wire.U32(remaining, 0);
+            int nameLength = Wire.Int32(Wire.U32(remaining, informationClass == SmbDirectoryInformationClass.Names ? 8 : 60));
+            if (nameLength > int.MaxValue - Header)
+                throw new SmbProtocolException("Oversized directory name.");
+            var entry = BoundEntry(remaining, next, Header + nameLength, 8);
+            string name = Wire.Text(entry, Header, nameLength);
             ValidateDirectoryName(name);
             if (informationClass == SmbDirectoryInformationClass.Names)
             {
@@ -309,22 +339,25 @@ internal static class SmbFileInformationCodec
             else
             {
                 string? shortName = null;
-                if (layout.ShortName >= 0)
+                if (ShortName >= 0)
                 {
-                    var shortLength = entry[layout.ShortName];
-                    if (shortLength > 24 || (shortLength & 1) != 0) throw new SmbProtocolException("Invalid short-name length.");
-                    shortName = Wire.Text(entry, layout.ShortName + 2, shortLength);
-                    if (shortName.Length != 0) ValidateDirectoryName(shortName);
+                    byte shortLength = entry[ShortName];
+                    if (shortLength > 24 || (shortLength & 1) != 0)
+                        throw new SmbProtocolException("Invalid short-name length.");
+                    shortName = Wire.Text(entry, ShortName + 2, shortLength);
+                    if (shortName.Length != 0)
+                        ValidateDirectoryName(shortName);
                 }
-                var attributes = (FileAttributes)Wire.U32(entry, 56);
-                SmbFileId128? id128 = layout.Id128 < 0 ? null : new SmbFileId128(Wire.U64(entry, layout.Id128), Wire.U64(entry, layout.Id128 + 8));
+                FileAttributes attributes = (FileAttributes)Wire.U32(entry, 56);
+                SmbFileId128? id128 = Id128 < 0 ? null : new SmbFileId128(Wire.U64(entry, Id128), Wire.U64(entry, Id128 + 8));
                 entries.Add(new(name, Wire.U32(entry, 4), Nonnegative(entry, 40), Nonnegative(entry, 48), attributes,
                     Time(entry, 8), Time(entry, 16), Time(entry, 24), Time(entry, 32),
-                    layout.Ea < 0 ? null : Wire.U32(entry, layout.Ea),
-                    layout.Reparse < 0 || (attributes & FileAttributes.ReparsePoint) == 0 ? null : Wire.U32(entry, layout.Reparse),
-                    shortName, layout.Id64 < 0 ? null : Wire.U64(entry, layout.Id64), id128));
+                    Ea < 0 ? null : Wire.U32(entry, Ea),
+                    Reparse < 0 || (attributes & FileAttributes.ReparsePoint) == 0 ? null : Wire.U32(entry, Reparse),
+                    shortName, Id64 < 0 ? null : Wire.U64(entry, Id64), id128));
             }
-            if (next == 0) break;
+            if (next == 0)
+                break;
             position = checked(position + (int)next);
         }
         return entries;
@@ -335,7 +368,8 @@ internal static class SmbFileInformationCodec
     /// <param name="value">已定义的远程目录格式。</param>
     /// <returns>固定头、EA、标签、短名长度、64 位 ID 和 128 位 ID 的偏移。</returns>
     internal static (int Header, int Ea, int Reparse, int ShortName, int Id64, int Id128) DirectoryLayout(SmbDirectoryInformationClass value)
-        => value switch
+    {
+        return value switch
         {
             SmbDirectoryInformationClass.Directory => (64, -1, -1, -1, -1, -1),
             SmbDirectoryInformationClass.FullDirectory => (68, 64, -1, -1, -1, -1),
@@ -352,6 +386,7 @@ internal static class SmbFileInformationCodec
             SmbDirectoryInformationClass.IdAllExtdBothDirectory => (122, 64, 68, 96, 72, 80),
             _ => throw new ArgumentOutOfRangeException(nameof(value))
         };
+    }
 
 
     /// <summary>编码网络扩展重命名结构，RootDirectory 固定为零，并保留结构最小 24 字节的填充。</summary>
@@ -360,11 +395,13 @@ internal static class SmbFileInformationCodec
     /// <returns>FILE_RENAME_INFORMATION_EX 请求字节。</returns>
     internal static byte[] EncodeRename(string destination, SmbRenameFlags flags)
     {
-        if (((uint)flags & ~0x1FFu) != 0) throw new ArgumentOutOfRangeException(nameof(flags));
-        var normalized = SmbPath.Normalize(destination);
-        if (normalized.Length == 0) throw new ArgumentException("A destination filename is required.", nameof(destination));
-        var name = Wire.Unicode.GetBytes(normalized);
-        var result = new byte[Math.Max(24, 20 + name.Length)];
+        if (((uint)flags & ~0x1FFu) != 0)
+            throw new ArgumentOutOfRangeException(nameof(flags));
+        string normalized = SmbPath.Normalize(destination);
+        if (normalized.Length == 0)
+            throw new ArgumentException("A destination filename is required.", nameof(destination));
+        byte[] name = Wire.Unicode.GetBytes(normalized);
+        byte[] result = new byte[Math.Max(24, 20 + name.Length)];
         Wire.Put32(result, 0, (uint)flags);
         Wire.Put32(result, 16, (uint)name.Length);
         name.CopyTo(result, 20);
@@ -380,13 +417,21 @@ internal static class SmbFileInformationCodec
         ArgumentNullException.ThrowIfNull(shortName);
         if (shortName.Length != 0)
         {
-            try { ValidateDirectoryName(shortName); }
-            catch (SmbProtocolException ex) { throw new ArgumentException("A short name must be a single file name.", nameof(shortName), ex); }
+            try
+            {
+                ValidateDirectoryName(shortName);
+            }
+            catch (SmbProtocolException ex)
+            {
+                throw new ArgumentException("A short name must be a single file name.", nameof(shortName), ex);
+            }
         }
-        var name = Wire.Unicode.GetBytes(shortName);
-        if (name.Length > 24) throw new ArgumentException("A short name may contain at most 12 UTF-16 code units.", nameof(shortName));
-        var result = new byte[4 + name.Length];
-        Wire.Put32(result, 0, (uint)name.Length); name.CopyTo(result, 4);
+        byte[] name = Wire.Unicode.GetBytes(shortName);
+        if (name.Length > 24)
+            throw new ArgumentException("A short name may contain at most 12 UTF-16 code units.", nameof(shortName));
+        byte[] result = new byte[4 + name.Length];
+        Wire.Put32(result, 0, (uint)name.Length);
+        name.CopyTo(result, 4);
         return result;
     }
 
@@ -409,10 +454,10 @@ internal static class SmbFileInformationCodec
     /// <returns>限于当前记录的切片；末尾记录可包含忽略的填充。</returns>
     private static ReadOnlySpan<byte> BoundEntry(ReadOnlySpan<byte> remaining, uint next, int minimum, int alignment)
     {
-        if (minimum < 0 || remaining.Length < minimum ||
-            (next != 0 && (next % alignment != 0 || next < minimum || next >= remaining.Length)))
-            throw new SmbProtocolException("Invalid or truncated information entry chain.");
-        return next == 0 ? remaining : remaining[..(int)next];
+        return minimum < 0 || remaining.Length < minimum ||
+            (next != 0 && (next % alignment != 0 || next < minimum || next >= remaining.Length))
+            ? throw new SmbProtocolException("Invalid or truncated information entry chain.")
+            : next == 0 ? remaining : remaining[..(int)next];
     }
 
 
@@ -431,8 +476,7 @@ internal static class SmbFileInformationCodec
     /// <returns>UTC 文件时间或空值。</returns>
     private static DateTimeOffset? Time(ReadOnlySpan<byte> data, int offset)
     {
-        if (Wire.I64(data, offset) < 0) throw new SmbProtocolException("Negative file information timestamp.");
-        return Wire.Time(data, offset);
+        return Wire.I64(data, offset) < 0 ? throw new SmbProtocolException("Negative file information timestamp.") : Wire.Time(data, offset);
     }
 
 
@@ -442,7 +486,7 @@ internal static class SmbFileInformationCodec
     /// <returns>已验证的非负数值。</returns>
     private static long Nonnegative(ReadOnlySpan<byte> data, int offset)
     {
-        var value = Wire.I64(data, offset);
+        long value = Wire.I64(data, offset);
         return value >= 0 ? value : throw new SmbProtocolException("Negative file information size or position.");
     }
 
@@ -452,5 +496,12 @@ internal static class SmbFileInformationCodec
     /// <param name="offset">布尔字节偏移。</param>
     /// <returns>对应的布尔值。</returns>
     private static bool Boolean(ReadOnlySpan<byte> data, int offset)
-        => Wire.Slice(data, offset, 1)[0] switch { 0 => false, 1 => true, _ => throw new SmbProtocolException("Invalid file information Boolean.") };
+    {
+        return Wire.Slice(data, offset, 1)[0] switch
+        {
+            0 => false,
+            1 => true,
+            _ => throw new SmbProtocolException("Invalid file information Boolean.")
+        };
+    }
 }

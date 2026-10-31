@@ -22,9 +22,8 @@
  * SOFTWARE.
  */
 using System.Net;
-using System.Security.Cryptography;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 
 /// <summary>SMB2/3 线上协议版本号；数值直接写入 NEGOTIATE 的 dialect 数组。</summary>
@@ -99,12 +98,18 @@ public sealed record SmbClientOptions
 {
 
     /// <summary>逻辑 SMB 服务器名或 IP；用于身份和共享路径，可与 Transport.RemoteAddress 的实际连接地址分离。</summary>
-    public required string Host { get; init; }
+    public required string Host
+    {
+        get; init;
+    }
 
     /// <summary>显式端口覆盖；null 时根据传输类型选择标准端口，避免切换传输后仍沿用 TCP 445。</summary>
     private readonly int? port;
     /// <summary>未显式指定时按传输选择标准端口：TCP 445、NetBIOS 139、QUIC 443、RDMA 5445。</summary>
-    public int Port { get => port ?? (Transport?.DefaultPort ?? 445); init => port = value; }
+    public int Port
+    {
+        get => port ?? Transport?.DefaultPort ?? 445; init => port = value;
+    }
 
     /// <summary>地址选择、本地绑定、NetBIOS、QUIC 和 RDMA 的独立配置。</summary>
     public SmbTransportOptions Transport { get; init; } = new();
@@ -130,12 +135,21 @@ public sealed record SmbClientOptions
     /// <summary>SMB 消息加密策略，默认在可用时启用。</summary>
     public SmbEncryptionPolicy Encryption { get; init; } = SmbEncryptionPolicy.WhenAvailable;
     /// <summary>SMB 3.1.1 加密套件的协商顺序；为空时采用当前平台支持的默认列表。</summary>
-    public IReadOnlyList<SmbEncryptionCipher>? EncryptionCiphers { get; init; }
+    public IReadOnlyList<SmbEncryptionCipher>? EncryptionCiphers
+    {
+        get; init;
+    }
     /// <summary>SMB 3.1.1 签名算法的协商顺序；更早版本采用协议规定的固定算法。</summary>
-    public IReadOnlyList<SmbSigningAlgorithm>? SigningAlgorithms { get; init; }
+    public IReadOnlyList<SmbSigningAlgorithm>? SigningAlgorithms
+    {
+        get; init;
+    }
 
     /// <summary>显式允许服务器返回来宾或匿名会话；仍不能绕过强制签名及加密要求。</summary>
-    public bool AllowGuest { get; init; }
+    public bool AllowGuest
+    {
+        get; init;
+    }
 
     /// <summary>建立底层传输及连接阶段的时间限制；可使用无限超时。</summary>
     public TimeSpan ConnectTimeout { get; init; } = TimeSpan.FromSeconds(15);
@@ -170,19 +184,19 @@ public sealed record SmbClientOptions
         ValidateTimeout(OperationTimeout, nameof(OperationTimeout));
         if (MaximumPacketSize is < 65536 + 256 or > 0xFFFFFF)
             throw new ArgumentOutOfRangeException(nameof(MaximumPacketSize));
-        if (TransferBufferSize < 4096 || TransferBufferSize > MaximumPacketSize - 256)
-            throw new ArgumentOutOfRangeException(nameof(TransferBufferSize));
-        if (ClientGuid == Guid.Empty)
-            throw new ArgumentException("ClientGuid must not be empty.", nameof(ClientGuid));
-        return this with
-        {
-            Transport = (Transport ?? throw new ArgumentException("Transport options are required.")).Validate(Host),
-            Multichannel = (Multichannel ?? throw new ArgumentException("Multichannel options are required.")).Validate(),
-            Compression = (Compression ?? throw new ArgumentException("Compression options are required.")).Snapshot(),
-            Qos = (Qos ?? throw new ArgumentException("QoS options are required.")).Snapshot(),
-            EncryptionCiphers = Snapshot(EncryptionCiphers, nameof(EncryptionCiphers)),
-            SigningAlgorithms = Snapshot(SigningAlgorithms, nameof(SigningAlgorithms))
-        };
+        return TransferBufferSize < 4096 || TransferBufferSize > MaximumPacketSize - 256
+            ? throw new ArgumentOutOfRangeException(nameof(TransferBufferSize))
+            : ClientGuid == Guid.Empty
+            ? throw new ArgumentException("ClientGuid must not be empty.", nameof(ClientGuid))
+            : (this with
+            {
+                Transport = (Transport ?? throw new ArgumentException("Transport options are required.")).Validate(Host),
+                Multichannel = (Multichannel ?? throw new ArgumentException("Multichannel options are required.")).Validate(),
+                Compression = (Compression ?? throw new ArgumentException("Compression options are required.")).Snapshot(),
+                Qos = (Qos ?? throw new ArgumentException("QoS options are required.")).Snapshot(),
+                EncryptionCiphers = Snapshot(EncryptionCiphers, nameof(EncryptionCiphers)),
+                SigningAlgorithms = Snapshot(SigningAlgorithms, nameof(SigningAlgorithms))
+            });
     }
 
 
@@ -193,10 +207,10 @@ public sealed record SmbClientOptions
     {
         if (values is null)
             return null;
-        var result = values.ToArray();
-        if (result.Length == 0 || result.Any(value => !Enum.IsDefined(value)) || result.Distinct().Count() != result.Length)
-            throw new ArgumentException("Algorithm offers must contain distinct supported identifiers.", name);
-        return result;
+        T[] result = values.ToArray();
+        return result.Length == 0 || result.Any(value => !Enum.IsDefined(value)) || result.Distinct().Count() != result.Length
+            ? throw new ArgumentException("Algorithm offers must contain distinct supported identifiers.", name)
+            : result;
     }
 
 
@@ -215,16 +229,28 @@ public sealed class SmbCredential
 {
 
     /// <summary>认证用户名；构造时可从 DOMAIN\user 中拆出域。</summary>
-    public string UserName { get; }
+    public string UserName
+    {
+        get;
+    }
 
     /// <summary>NTLM 认证域；空字符串表示未显式指定。</summary>
-    public string Domain { get; }
+    public string Domain
+    {
+        get;
+    }
 
     /// <summary>仅供 NTLM 运算读取的密码，不进入诊断字符串；调用方应控制凭据对象生命周期。</summary>
-    internal string Password { get; }
+    internal string Password
+    {
+        get;
+    }
 
     /// <summary>是否明确请求匿名身份，而非提供空用户名的普通认证。</summary>
-    public bool IsAnonymous { get; }
+    public bool IsAnonymous
+    {
+        get;
+    }
 
     /// <summary>无用户名和密码的匿名凭据；服务器策略仍可能拒绝。</summary>
     public static SmbCredential Anonymous { get; } = new("", "", "", true);
@@ -239,7 +265,8 @@ public sealed class SmbCredential
     public SmbCredential(NetworkCredential credential)
         : this((credential ?? throw new ArgumentNullException(nameof(credential))).UserName,
             credential.Password, credential.Domain)
-    { }
+    {
+    }
 
 
     /// <summary>保存显式身份并校验名称，域未单独给出时解析 DOMAIN\user；绝不在异常文本中输出密码。</summary>
@@ -252,7 +279,7 @@ public sealed class SmbCredential
             ArgumentException.ThrowIfNullOrWhiteSpace(userName);
         if (userName.Contains('\0') || domain.Contains('\0'))
             throw new ArgumentException("Names must not contain NUL characters.");
-        var separator = userName.IndexOf('\\');
+        int separator = userName.IndexOf('\\');
         if (separator >= 0 && domain.Length == 0)
         {
             domain = userName[..separator];
@@ -267,7 +294,10 @@ public sealed class SmbCredential
 
 
     /// <summary>返回用于诊断的域和用户名或匿名标记，不包含密码。</summary>
-    public override string ToString() => IsAnonymous ? "(anonymous)" : $"{Domain}\\{UserName}";
+    public override string ToString()
+    {
+        return IsAnonymous ? "(anonymous)" : $"{Domain}\\{UserName}";
+    }
 }
 
 
@@ -288,22 +318,37 @@ public sealed record SmbConnectionInfo(
 {
 
     /// <summary>实际协商或由该协议版本规定的签名算法。</summary>
-    public SmbSigningAlgorithm SigningAlgorithm { get; init; }
+    public SmbSigningAlgorithm SigningAlgorithm
+    {
+        get; init;
+    }
 
     /// <summary>实际选定的 SMB 加密套件；未协商时为空。</summary>
-    public SmbEncryptionCipher? EncryptionCipher { get; init; }
+    public SmbEncryptionCipher? EncryptionCipher
+    {
+        get; init;
+    }
 
     /// <summary>该会话的常规请求是否使用 SMB 消息加密，不表示 QUIC TLS 状态。</summary>
-    public bool IsEncrypted { get; init; }
+    public bool IsEncrypted
+    {
+        get; init;
+    }
 
     /// <summary>建立主会话所使用的传输种类。</summary>
-    public SmbTransportKind Transport { get; init; }
+    public SmbTransportKind Transport
+    {
+        get; init;
+    }
 
     /// <summary>与服务器实际协商成功的压缩算法，未协商时为空列表。</summary>
     public IReadOnlyList<SmbCompressionAlgorithm> CompressionAlgorithms { get; init; } = [];
 
     /// <summary>双方是否实际协商成功链式压缩。</summary>
-    public bool SupportsChainedCompression { get; init; }
+    public bool SupportsChainedCompression
+    {
+        get; init;
+    }
 }
 
 

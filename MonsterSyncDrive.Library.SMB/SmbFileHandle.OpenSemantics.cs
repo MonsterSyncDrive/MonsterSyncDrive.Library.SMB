@@ -21,9 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-using MonsterSyncDrive.SMB.Protocol;
+using MonsterSyncDrive.Library.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>远端文件句柄的扇区几何查询和无缓冲 I/O 对齐校验。</summary>
 public sealed partial class SmbFileHandle
@@ -40,7 +40,7 @@ public sealed partial class SmbFileHandle
     /// <exception cref="SmbProtocolException">服务器返回的几何记录无效。</exception>
     public async Task<SmbSectorSizeInformation> GetSectorSizeInformationAsync(CancellationToken cancellationToken = default)
     {
-        var data = await QueryInfoAsync(SmbInfoType.FileSystem, 11, maximumOutput: 28,
+        byte[] data = await QueryInfoAsync(SmbInfoType.FileSystem, 11, maximumOutput: 28,
             cancellationToken: cancellationToken).ConfigureAwait(false);
         return SmbSectorSizeInformation.Parse(data);
     }
@@ -56,9 +56,9 @@ public sealed partial class SmbFileHandle
     {
         if ((OpenOptions.CreateOptions & SmbCreateOptions.NoIntermediateBuffering) == 0 || count == 0)
             return;
-        if (!share.IsDiskShare)
+        if (!Share.IsDiskShare)
             throw new InvalidOperationException("Unbuffered file I/O requires a disk share.");
-        var sectorSize = Volatile.Read(ref unbufferedLogicalSectorSize);
+        uint sectorSize = Volatile.Read(ref unbufferedLogicalSectorSize);
         if (sectorSize == 0)
         {
             await unbufferedGeometryGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -68,13 +68,16 @@ public sealed partial class SmbFileHandle
                 if (sectorSize == 0)
                 {
                     // 只有明确的不支持信息类错误才回退；权限、网络和取消错误必须继续向调用方报告。
-                    try { sectorSize = (await GetSectorSizeInformationAsync(cancellationToken).ConfigureAwait(false)).LogicalBytesPerSector; }
+                    try
+                    {
+                        sectorSize = (await GetSectorSizeInformationAsync(cancellationToken).ConfigureAwait(false)).LogicalBytesPerSector;
+                    }
                     catch (SmbException error) when (error.Status is SmbStatus.NotSupported or SmbStatus.InvalidDeviceRequest ||
                         (uint)error.Status == 0xC0000003)
                     {
-                        var data = await QueryInfoAsync(SmbInfoType.FileSystem, 7, maximumOutput: 32,
+                        byte[] data = await QueryInfoAsync(SmbInfoType.FileSystem, 7, maximumOutput: 32,
                             cancellationToken: cancellationToken).ConfigureAwait(false);
-                        Wire.Slice(data, 0, 32);
+                        _ = Wire.Slice(data, 0, 32);
                         sectorSize = Wire.U32(data, 28);
                         if (!SmbSectorSizeInformation.IsSectorSize(sectorSize))
                             throw new SmbProtocolException("The server returned an invalid logical sector size.");
@@ -83,7 +86,10 @@ public sealed partial class SmbFileHandle
                     Volatile.Write(ref unbufferedLogicalSectorSize, sectorSize);
                 }
             }
-            finally { unbufferedGeometryGate.Release(); }
+            finally
+            {
+                _ = unbufferedGeometryGate.Release();
+            }
         }
         ValidateUnbufferedAlignment(offset, count, sectorSize);
     }

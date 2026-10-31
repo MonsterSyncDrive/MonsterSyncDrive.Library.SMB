@@ -21,10 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Diagnostics.CodeAnalysis;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>客户端 RDMA 直接放置所需的通道固定选择，避免描述符跨队列对使用。</summary>
 public sealed partial class SmbClient
@@ -37,7 +37,8 @@ public sealed partial class SmbClient
         [NotNullWhen(true)] out SmbConnection? selected)
     {
         selected = null;
-        if (shareEncryptionRequired) return false;
+        if (shareEncryptionRequired)
+            return false;
         ThrowIfDisposed();
         selected = SnapshotConnections().Where(channel => channel.CanUseRdmaDirectPlacement)
             .Select(channel => (Connection: channel, Pending: channel.PendingRequestCount))

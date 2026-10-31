@@ -23,7 +23,7 @@
  */
 using System.Buffers.Binary;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB.Protocol;
 
 /// <summary>MS-SMBD 2.2.3.1 定义的 16 字节 SMB_DIRECT_BUFFER_DESCRIPTOR_V1。</summary>
 /// <param name="Offset">提供程序定义的远程起始地址，保留主机数值表示。</param>
@@ -38,8 +38,10 @@ public readonly record struct SmbRdmaBufferDescriptor(ulong Offset, uint Token, 
     /// <param name="destination">至少 16 字节的目标跨度。</param>
     public void Write(Span<byte> destination)
     {
-        if (destination.Length < EncodedSize) throw new ArgumentException("A buffer descriptor needs 16 bytes.", nameof(destination));
-        if (Length == 0 || Offset > ulong.MaxValue - Length) throw new ArgumentException("Invalid RDMA buffer range.");
+        if (destination.Length < EncodedSize)
+            throw new ArgumentException("A buffer descriptor needs 16 bytes.", nameof(destination));
+        if (Length == 0 || Offset > ulong.MaxValue - Length)
+            throw new ArgumentException("Invalid RDMA buffer range.");
         BinaryPrimitives.WriteUInt64LittleEndian(destination, Offset);
         BinaryPrimitives.WriteUInt32LittleEndian(destination[8..], Token);
         BinaryPrimitives.WriteUInt32LittleEndian(destination[12..], Length);
@@ -50,21 +52,24 @@ public readonly record struct SmbRdmaBufferDescriptor(ulong Offset, uint Token, 
     /// <returns>经过校验的描述符。</returns>
     public static SmbRdmaBufferDescriptor Parse(ReadOnlySpan<byte> source)
     {
-        if (source.Length < EncodedSize) throw new SmbProtocolException("Truncated SMB Direct buffer descriptor.");
-        var result = new SmbRdmaBufferDescriptor(BinaryPrimitives.ReadUInt64LittleEndian(source),
+        if (source.Length < EncodedSize)
+            throw new SmbProtocolException("Truncated SMB Direct buffer descriptor.");
+        SmbRdmaBufferDescriptor result = new(BinaryPrimitives.ReadUInt64LittleEndian(source),
             BinaryPrimitives.ReadUInt32LittleEndian(source[8..]), BinaryPrimitives.ReadUInt32LittleEndian(source[12..]));
-        if (result.Length == 0 || result.Offset > ulong.MaxValue - result.Length)
-            throw new SmbProtocolException("Invalid SMB Direct buffer descriptor range.");
-        return result;
+        return result.Length == 0 || result.Offset > ulong.MaxValue - result.Length
+            ? throw new SmbProtocolException("Invalid SMB Direct buffer descriptor range.")
+            : result;
     }
 
     /// <summary>在数量限制内编码描述符数组，不依赖运行时序列化或平台专有类型。</summary>
     public static byte[] Encode(IReadOnlyList<SmbRdmaBufferDescriptor> descriptors)
     {
         ArgumentNullException.ThrowIfNull(descriptors);
-        if (descriptors.Count is < 1 or > 4096) throw new ArgumentOutOfRangeException(nameof(descriptors));
-        var bytes = new byte[checked(descriptors.Count * EncodedSize)];
-        for (var i = 0; i < descriptors.Count; i++) descriptors[i].Write(bytes.AsSpan(i * EncodedSize));
+        if (descriptors.Count is < 1 or > 4096)
+            throw new ArgumentOutOfRangeException(nameof(descriptors));
+        byte[] bytes = new byte[checked(descriptors.Count * EncodedSize)];
+        for (int i = 0; i < descriptors.Count; i++)
+            descriptors[i].Write(bytes.AsSpan(i * EncodedSize));
         return bytes;
     }
 
@@ -73,8 +78,9 @@ public readonly record struct SmbRdmaBufferDescriptor(ulong Offset, uint Token, 
     {
         if (source.Length == 0 || source.Length % EncodedSize != 0 || source.Length / EncodedSize > 4096)
             throw new SmbProtocolException("Invalid SMB Direct descriptor array length.");
-        var result = new SmbRdmaBufferDescriptor[source.Length / EncodedSize];
-        for (var i = 0; i < result.Length; i++) result[i] = Parse(source[(i * EncodedSize)..]);
+        SmbRdmaBufferDescriptor[] result = new SmbRdmaBufferDescriptor[source.Length / EncodedSize];
+        for (int i = 0; i < result.Length; i++)
+            result[i] = Parse(source[(i * EncodedSize)..]);
         return result;
     }
 
@@ -84,7 +90,8 @@ public readonly record struct SmbRdmaBufferDescriptor(ulong Offset, uint Token, 
         ArgumentNullException.ThrowIfNull(descriptors);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         ArgumentOutOfRangeException.ThrowIfNegative(length);
-        if (descriptors.Count is < 1 or > 4096) throw new ArgumentOutOfRangeException(nameof(descriptors));
+        if (descriptors.Count is < 1 or > 4096)
+            throw new ArgumentOutOfRangeException(nameof(descriptors));
         long total = 0;
         foreach (var descriptor in descriptors)
         {
@@ -92,14 +99,20 @@ public readonly record struct SmbRdmaBufferDescriptor(ulong Offset, uint Token, 
                 throw new ArgumentException("Invalid registered range.", nameof(descriptors));
             total = checked(total + descriptor.Length);
         }
-        if (offset > total || length > total - offset) throw new ArgumentOutOfRangeException(nameof(length));
-        var result = new List<SmbRdmaBufferDescriptor>();
-        var remaining = length;
+        if (offset > total || length > total - offset)
+            throw new ArgumentOutOfRangeException(nameof(length));
+        List<SmbRdmaBufferDescriptor> result = [];
+        int remaining = length;
         foreach (var descriptor in descriptors)
         {
-            if (remaining == 0) break;
-            if (offset >= descriptor.Length) { offset -= descriptor.Length; continue; }
-            var count = (uint)Math.Min(remaining, descriptor.Length - offset);
+            if (remaining == 0)
+                break;
+            if (offset >= descriptor.Length)
+            {
+                offset -= descriptor.Length;
+                continue;
+            }
+            uint count = (uint)Math.Min(remaining, descriptor.Length - offset);
             result.Add(new SmbRdmaBufferDescriptor(checked(descriptor.Offset + (ulong)offset), descriptor.Token, count));
             remaining -= (int)count;
             offset = 0;

@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.ComponentModel;
@@ -28,9 +29,8 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
-using MonsterSyncDrive.SMB.Transport;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB.Transport;
 
 /// <summary>已安装的 Windows NetworkDirect v2 目录条目。</summary>
 /// <param name="Id">已安装的提供程序标识符。</param>
@@ -50,13 +50,16 @@ public sealed class SmbNetworkDirectProvider : ISmbRdmaProvider
     /// <summary>当前操作系统和进程是否支持本后端接口；不代表已经安装可用网卡。</summary>
     public static bool IsSupported => OperatingSystem.IsWindows() && IntPtr.Size == 8;
     /// <summary>可选地将原生发现限制为指定的已安装提供程序。</summary>
-    public Guid? PreferredProviderId { get; init; }
+    public Guid? PreferredProviderId
+    {
+        get; init;
+    }
 
     /// <summary>返回已安装的 NDv2 提供程序，不打开设备，也不连接对端。</summary>
     public static IReadOnlyList<SmbNetworkDirectProviderInfo> GetAvailableProviders()
     {
         CheckPlatform();
-        using var winsock = new RdmaNativeWinsockLease();
+        using RdmaNativeWinsockLease winsock = new();
         return RdmaNativeNetworkDirect.Enumerate().Select(p => new SmbNetworkDirectProviderInfo(p.Id, p.Name, (AddressFamily)p.Family, p.Path)).ToArray();
     }
 
@@ -69,23 +72,30 @@ public sealed class SmbNetworkDirectProvider : ISmbRdmaProvider
         ArgumentOutOfRangeException.ThrowIfLessThan(options.Port, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(options.Port, 65535);
         cancellationToken.ThrowIfCancellationRequested();
-        var providers = GetAvailableProviders().Where(p => PreferredProviderId is null || p.Id == PreferredProviderId).ToArray();
+        SmbNetworkDirectProviderInfo[] providers = GetAvailableProviders().Where(p => PreferredProviderId is null || p.Id == PreferredProviderId).ToArray();
         if (providers.Length == 0)
             throw new PlatformNotSupportedException("No matching Windows NetworkDirect v2 provider is installed. SMB Direct requires an RDMA NIC and its NDv2 driver.");
-        var addresses = IPAddress.TryParse(options.Host.Trim('[', ']'), out var literal) ? [literal]
+        IPAddress[] addresses = IPAddress.TryParse(options.Host.Trim('[', ']'), out IPAddress? literal) ? [literal]
             : await Dns.GetHostAddressesAsync(options.Host, cancellationToken).ConfigureAwait(false);
-        var failures = new List<Exception>();
-        foreach (var address in addresses)
+        List<Exception> failures = [];
+        foreach (IPAddress address in addresses)
         {
-            if (address.AddressFamily is not (AddressFamily.InterNetwork or AddressFamily.InterNetworkV6)) continue;
-            if (options.LocalEndPoint is { } configured && configured.AddressFamily != address.AddressFamily) continue;
-            var remote = new IPEndPoint(address, options.Port);
-            var local = SourceAddress(remote, options.LocalEndPoint);
-            foreach (var provider in providers.Where(p => p.AddressFamily == address.AddressFamily))
+            if (address.AddressFamily is not (AddressFamily.InterNetwork or AddressFamily.InterNetworkV6))
+                continue;
+            if (options.LocalEndPoint is { } configured && configured.AddressFamily != address.AddressFamily)
+                continue;
+            IPEndPoint remote = new(address, options.Port);
+            IPEndPoint local = SourceAddress(remote, options.LocalEndPoint);
+            foreach (SmbNetworkDirectProviderInfo? provider in providers.Where(p => p.AddressFamily == address.AddressFamily))
             {
-                try { return await RdmaNativeWindowsEndpoint.OpenAsync(provider, local, remote, options, cancellationToken).ConfigureAwait(false); }
+                try
+                {
+                    return await RdmaNativeWindowsEndpoint.OpenAsync(provider, local, remote, options, cancellationToken).ConfigureAwait(false);
+                }
                 catch (Exception ex) when (ex is IOException or Win32Exception or SocketException or DllNotFoundException or BadImageFormatException)
-                { failures.Add(ex); }
+                {
+                    failures.Add(ex);
+                }
             }
         }
         throw new IOException("No installed NetworkDirect provider could establish the requested RDMA connection.", new AggregateException(failures));
@@ -96,9 +106,9 @@ public sealed class SmbNetworkDirectProvider : ISmbRdmaProvider
     {
         if (configured is not null && !configured.Address.Equals(IPAddress.Any) && !configured.Address.Equals(IPAddress.IPv6Any))
             return new(configured.Address, configured.Port);
-        using var route = new Socket(remote.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+        using Socket route = new(remote.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
         route.Connect(remote);
-        var selected = (IPEndPoint)route.LocalEndPoint!;
+        IPEndPoint selected = (IPEndPoint)route.LocalEndPoint!;
         return new(selected.Address, configured?.Port ?? 0);
     }
 
@@ -122,12 +132,20 @@ internal sealed class RdmaNativeWinsockLease : IDisposable
         try
         {
             var status = RdmaNativeNetworkDirect.WsaStartup(0x202, data);
-            if (status != 0) throw new Win32Exception(status, "Could not initialize Winsock for NetworkDirect.");
+            if (status != 0)
+                throw new Win32Exception(status, "Could not initialize Winsock for NetworkDirect.");
         }
-        finally { RdmaNativeNetworkDirect.FreeWsaData(data); }
+        finally
+        {
+            RdmaNativeNetworkDirect.FreeWsaData(data);
+        }
     }
     /// <summary>全部依赖对象销毁后，释放本次初始化。</summary>
-    public void Dispose() { if (Interlocked.Exchange(ref disposed, 1) == 0) _ = RdmaNativeNetworkDirect.WsaCleanup(); }
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref disposed, 1) == 0)
+            _ = RdmaNativeNetworkDirect.WsaCleanup();
+    }
 }
 
 /// <summary>可靠连接的 NDv2 端点、完成结果分发器及已注册缓冲区所有者。</summary>
@@ -179,32 +197,47 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
     private Exception? failure;
     /// <summary>IND2Adapter.Query 返回的硬件限制。</summary>
     private RdmaNativeNetworkDirect.AdapterInfo limits;
-    /// <summary>分配缓冲区时采用的接收最大字节数。</summary>
-    private int receiveSize;
 
     /// <summary>已绑定的本地 RDMA 套接字地址。</summary>
-    public EndPoint? LocalEndPoint { get; private set; }
+    public EndPoint? LocalEndPoint
+    {
+        get; private set;
+    }
     /// <summary>选定的远程 RDMA 套接字地址。</summary>
-    public EndPoint? RemoteEndPoint { get; private set; }
+    public EndPoint? RemoteEndPoint
+    {
+        get; private set;
+    }
     /// <summary>提供程序接受的 SEND 工作请求最大字节数。</summary>
-    public int MaximumSendSize { get; private set; }
+    public int MaximumSendSize
+    {
+        get; private set;
+    }
     /// <summary>提供程序接受的 RECEIVE 工作请求最大字节数。</summary>
-    public int MaximumReceiveSize => receiveSize;
+    public int MaximumReceiveSize
+    {
+        get; private set;
+    }
     /// <summary>接收信用的公布数量绝不超过由设备资源支持的容量。</summary>
-    public ushort MaximumReceiveQueueDepth { get; private set; }
+    public ushort MaximumReceiveQueueDepth
+    {
+        get; private set;
+    }
     /// <summary>只有连接协商了入站 RDMA 读取资源，才允许服务端读取本地注册数据。</summary>
     public bool SupportsRemoteRead => limits.MaximumInboundReadLimit > 0;
     /// <summary>可靠连接的 ND2 队列对允许注册远程写入区域。</summary>
     public bool SupportsRemoteWrite => true;
 
     /// <summary>异步设备初始化前，先创建原生资源所有者。</summary>
-    private RdmaNativeWindowsEndpoint() { }
+    private RdmaNativeWindowsEndpoint()
+    {
+    }
 
     /// <summary>打开提供程序、适配器、完成队列、队列对和连接器，并完成 RDMA 连接管理握手。</summary>
     internal static async Task<RdmaNativeWindowsEndpoint> OpenAsync(SmbNetworkDirectProviderInfo provider, IPEndPoint local,
         IPEndPoint remote, SmbRdmaConnectOptions options, CancellationToken cancellationToken)
     {
-        var result = new RdmaNativeWindowsEndpoint();
+        RdmaNativeWindowsEndpoint result = new();
         try
         {
             result.module = NativeLibrary.Load(provider.LibraryPath);
@@ -214,18 +247,23 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
                 RdmaNativeNetworkDirect.Check(RdmaNativeNetworkDirect.Resolve(providerPointer, Sockaddr(local), out var adapterId), "IND2Provider.ResolveAddress");
                 result.adapter = RdmaNativeNetworkDirect.OpenAdapter(providerPointer, adapterId);
             }
-            finally { RdmaNativeNetworkDirect.Release(providerPointer); }
+            finally
+            {
+                RdmaNativeNetworkDirect.Release(providerPointer);
+            }
             result.limits = RdmaNativeNetworkDirect.Query(result.adapter);
             if (result.limits.MaximumReceiveSge == 0 || result.limits.MaximumInitiatorSge == 0 || result.limits.MaximumReceiveQueueDepth == 0 ||
                 result.limits.MaximumInitiatorQueueDepth == 0 || result.limits.MaximumCompletionQueueDepth < 2 || result.limits.MaximumTransferLength < 128 || result.limits.MaximumRegistrationSize == 0)
                 throw new IOException("The ND2 adapter lacks the queues or memory capabilities needed by SMB Direct.");
             result.MaximumReceiveQueueDepth = (ushort)Math.Min(options.MaximumReceiveCredits, Math.Min(ushort.MaxValue, Math.Min(result.limits.MaximumReceiveQueueDepth, result.limits.MaximumCompletionQueueDepth / 2)));
             var initiatorDepth = Math.Min(128u, Math.Min(result.limits.MaximumInitiatorQueueDepth, result.limits.MaximumCompletionQueueDepth - result.MaximumReceiveQueueDepth));
-            result.initiatorSlots.Dispose(); result.initiatorSlots = new((int)initiatorDepth, (int)initiatorDepth);
+            result.initiatorSlots.Dispose();
+            result.initiatorSlots = new((int)initiatorDepth, (int)initiatorDepth);
             var maximumBuffer = Math.Min(result.limits.MaximumTransferLength, (ulong)result.limits.MaximumRegistrationSize);
             result.MaximumSendSize = (int)Math.Min((ulong)options.PreferredSendSize, maximumBuffer);
-            result.receiveSize = (int)Math.Min((ulong)options.MaximumReceiveSize, maximumBuffer);
-            if (result.MaximumSendSize < 128 || result.receiveSize < 128) throw new IOException("The ND2 device cannot register an MS-SMBD minimum buffer.");
+            result.MaximumReceiveSize = (int)Math.Min((ulong)options.MaximumReceiveSize, maximumBuffer);
+            if (result.MaximumSendSize < 128 || result.MaximumReceiveSize < 128)
+                throw new IOException("The ND2 device cannot register an MS-SMBD minimum buffer.");
             result.file = RdmaNativeNetworkDirect.CreateFile(result.adapter);
             result.completionQueue = RdmaNativeNetworkDirect.CreateCq(result.adapter, result.file, result.MaximumReceiveQueueDepth + initiatorDepth);
             result.queuePair = RdmaNativeNetworkDirect.CreateQp(result.adapter, result.completionQueue, result.MaximumReceiveQueueDepth, initiatorDepth);
@@ -239,13 +277,18 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
             result.poller = Task.Run(result.PollAsync);
             return result;
         }
-        catch { await result.DisposeAsync().ConfigureAwait(false); throw; }
+        catch
+        {
+            await result.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>投递真实的已注册 RECEIVE 工作请求，不超过硬件队列容量。</summary>
     public async ValueTask<int> PostReceivesAsync(int count, int bufferSize, CancellationToken cancellationToken = default)
     {
-        if (count < 0 || bufferSize < 1 || bufferSize > MaximumReceiveSize) throw new ArgumentOutOfRangeException(nameof(count));
+        if (count < 0 || bufferSize < 1 || bufferSize > MaximumReceiveSize)
+            throw new ArgumentOutOfRangeException(nameof(count));
         ThrowIfClosed();
         var posted = 0;
         for (; posted < count; posted++)
@@ -253,25 +296,32 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
             lock (nativeGate)
             {
                 ThrowIfClosed();
-                if (receiveOutstanding >= MaximumReceiveQueueDepth) break;
+                if (receiveOutstanding >= MaximumReceiveQueueDepth)
+                    break;
                 receiveOutstanding++;
             }
             Region? region = null;
             try
             {
                 region = await Region.CreateAsync(this, new byte[bufferSize], 1, cancellationToken).ConfigureAwait(false);
-                var work = new Work(NextCookie(), region, true);
+                Work work = new(NextCookie(), region, true);
                 lock (nativeGate)
                 {
-                    ThrowIfClosed(); pending.TryAdd(work.Cookie, work);
+                    ThrowIfClosed();
+                    _ = pending.TryAdd(work.Cookie, work);
                     var status = RdmaNativeNetworkDirect.Post(queuePair, work.Cookie, region.ScatterGather, true);
-                    if (status < 0) { pending.TryRemove(work.Cookie, out _); RdmaNativeNetworkDirect.Check(status, "IND2QueuePair.Receive"); }
+                    if (status < 0)
+                    {
+                        _ = pending.TryRemove(work.Cookie, out _);
+                        RdmaNativeNetworkDirect.Check(status, "IND2QueuePair.Receive");
+                    }
                 }
             }
             catch
             {
-                Interlocked.Decrement(ref receiveOutstanding);
-                if (region is not null) await region.DisposeAsync().ConfigureAwait(false);
+                _ = Interlocked.Decrement(ref receiveOutstanding);
+                if (region is not null)
+                    await region.DisposeAsync().ConfigureAwait(false);
                 throw;
             }
         }
@@ -283,10 +333,11 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
     {
         ThrowIfClosed();
         cancellationToken.ThrowIfCancellationRequested();
-        if (message.IsEmpty || message.Length > MaximumSendSize) throw new ArgumentOutOfRangeException(nameof(message));
+        if (message.IsEmpty || message.Length > MaximumSendSize)
+            throw new ArgumentOutOfRangeException(nameof(message));
         // ND2 基础队列对接口没有 SEND_WITH_INVALIDATE 入口。MS-SMBD 明确允许忽略
         // 这一可选令牌；注册对象释放仍是确认远程访问结束的权威栅栏。
-        await using var region = await Region.CreateAsync(this, message.ToArray(), 0, cancellationToken).ConfigureAwait(false);
+        await using Region region = await Region.CreateAsync(this, message.ToArray(), 0, cancellationToken).ConfigureAwait(false);
         await SubmitAsync(region, null, false, cancellationToken).ConfigureAwait(false);
     }
 
@@ -295,11 +346,15 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
     {
         try
         {
-            var result = await receives.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            Interlocked.Decrement(ref receiveOutstanding);
+            SmbRdmaReceive result = await receives.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            _ = Interlocked.Decrement(ref receiveOutstanding);
             return result;
         }
-        catch (ChannelClosedException) { ThrowIfClosed(); throw new IOException("The native RDMA receive queue closed."); }
+        catch (ChannelClosedException)
+        {
+            ThrowIfClosed();
+            throw new IOException("The native RDMA receive queue closed.");
+        }
     }
 
     /// <summary>根据设备长度限制注册一个或多个片段，仅授予请求的远程权限。</summary>
@@ -311,20 +366,26 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
             throw new ArgumentException("Invalid RDMA buffer or access mask.");
         if ((access & SmbRdmaMemoryAccess.RemoteRead) != 0 && !SupportsRemoteRead)
             throw new NotSupportedException("The ND2 connection has no inbound RDMA read resources.");
-        var segments = new List<Region>();
+        List<Region> segments = [];
         uint flags = (access & SmbRdmaMemoryAccess.RemoteRead) != 0 ? 2u : 0;
-        if ((access & SmbRdmaMemoryAccess.RemoteWrite) != 0) flags |= 5;
+        if ((access & SmbRdmaMemoryAccess.RemoteWrite) != 0)
+            flags |= 5;
         try
         {
             for (var offset = 0; offset < buffer.Length;)
             {
-                var length = (int)Math.Min((ulong)(buffer.Length - offset), (ulong)limits.MaximumRegistrationSize);
+                var length = (int)Math.Min((ulong)(buffer.Length - offset), limits.MaximumRegistrationSize);
                 segments.Add(await Region.CreateAsync(this, buffer.Slice(offset, length), flags, cancellationToken).ConfigureAwait(false));
                 offset += length;
             }
             return new Registration(segments.ToArray());
         }
-        catch { foreach (var segment in segments) await segment.DisposeAsync().ConfigureAwait(false); throw; }
+        catch
+        {
+            foreach (Region segment in segments)
+                await segment.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>向已固定的本地读取目标区域发出原生 RDMA READ。</summary>
@@ -332,13 +393,18 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
     {
         ThrowIfClosed();
         cancellationToken.ThrowIfCancellationRequested();
-        if (limits.MaximumReadSge == 0 || limits.MaximumOutboundReadLimit == 0) throw new NotSupportedException("The ND2 adapter does not support outbound RDMA reads.");
+        if (limits.MaximumReadSge == 0 || limits.MaximumOutboundReadLimit == 0)
+            throw new NotSupportedException("The ND2 adapter does not support outbound RDMA reads.");
         ValidateDirect(destination.Length, source);
         for (var offset = 0; offset < destination.Length;)
         {
             var count = (int)Math.Min((ulong)(destination.Length - offset), Math.Min(limits.MaximumTransferLength, (ulong)limits.MaximumRegistrationSize));
-            await using var region = await Region.CreateAsync(this, destination.Slice(offset, count), 1 | 8, cancellationToken).ConfigureAwait(false);
-            await SubmitAsync(region, source with { Offset = source.Offset + (uint)offset, Length = (uint)count }, false, cancellationToken).ConfigureAwait(false);
+            await using Region region = await Region.CreateAsync(this, destination.Slice(offset, count), 1 | 8, cancellationToken).ConfigureAwait(false);
+            await SubmitAsync(region, source with
+            {
+                Offset = source.Offset + (uint)offset,
+                Length = (uint)count
+            }, false, cancellationToken).ConfigureAwait(false);
             offset += count;
         }
     }
@@ -346,12 +412,18 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
     /// <summary>从已固定、已注册的源缓冲区发出原生 RDMA WRITE。</summary>
     public async ValueTask WriteAsync(ReadOnlyMemory<byte> source, SmbRdmaBufferDescriptor destination, CancellationToken cancellationToken = default)
     {
-        ThrowIfClosed(); cancellationToken.ThrowIfCancellationRequested(); ValidateDirect(source.Length, destination);
+        ThrowIfClosed();
+        cancellationToken.ThrowIfCancellationRequested();
+        ValidateDirect(source.Length, destination);
         for (var offset = 0; offset < source.Length;)
         {
             var count = (int)Math.Min((ulong)(source.Length - offset), Math.Min(limits.MaximumTransferLength, (ulong)limits.MaximumRegistrationSize));
-            await using var region = await Region.CreateAsync(this, source.Slice(offset, count).ToArray(), 0, cancellationToken).ConfigureAwait(false);
-            await SubmitAsync(region, destination with { Offset = destination.Offset + (uint)offset, Length = (uint)count }, true, cancellationToken).ConfigureAwait(false);
+            await using Region region = await Region.CreateAsync(this, source.Slice(offset, count).ToArray(), 0, cancellationToken).ConfigureAwait(false);
+            await SubmitAsync(region, destination with
+            {
+                Offset = destination.Offset + (uint)offset,
+                Length = (uint)count
+            }, true, cancellationToken).ConfigureAwait(false);
             offset += count;
         }
     }
@@ -367,106 +439,156 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
     private async Task SubmitAsync(Region region, SmbRdmaBufferDescriptor? remote, bool write, CancellationToken cancellationToken)
     {
         await initiatorSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
-        var work = new Work(NextCookie(), region, false);
+        Work work = new(NextCookie(), region, false);
         try
         {
             lock (nativeGate)
             {
-                ThrowIfClosed(); pending.TryAdd(work.Cookie, work);
+                ThrowIfClosed();
+                _ = pending.TryAdd(work.Cookie, work);
                 var status = remote is { } descriptor ? RdmaNativeNetworkDirect.PostDirect(queuePair, work.Cookie, region.ScatterGather, descriptor, write)
                     : RdmaNativeNetworkDirect.Post(queuePair, work.Cookie, region.ScatterGather, false);
-                if (status < 0) { pending.TryRemove(work.Cookie, out _); RdmaNativeNetworkDirect.Check(status, "IND2QueuePair initiator request"); }
+                if (status < 0)
+                {
+                    _ = pending.TryRemove(work.Cookie, out _);
+                    RdmaNativeNetworkDirect.Check(status, "IND2QueuePair initiator request");
+                }
             }
-            try { await work.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false); }
+            try
+            {
+                await work.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 Abort();
                 // 清空完成结果是允许 Region.Dispose 解除内存固定的栅栏。
-                try { await work.Completion.Task.ConfigureAwait(false); } catch (IOException) { }
+                try
+                {
+                    await work.Completion.Task.ConfigureAwait(false);
+                }
+                catch (IOException) { }
                 throw;
             }
         }
-        finally { initiatorSlots.Release(); }
+        finally
+        {
+            _ = initiatorSlots.Release();
+        }
     }
 
     /// <summary>分发真实完成队列结果，并注销已经完成的接收缓冲区。</summary>
     private async Task PollAsync()
     {
-        var batch = new RdmaNativeNetworkDirect.Result[32];
+        RdmaNativeNetworkDirect.Result[] batch = new RdmaNativeNetworkDirect.Result[32];
         try
         {
             while (true)
             {
                 uint count;
-                lock (nativeGate) count = completionQueue == 0 ? 0 : RdmaNativeNetworkDirect.Results(completionQueue, batch);
-                if (count > batch.Length) throw new IOException("The ND2 provider overran a completion-result array.");
+                lock (nativeGate)
+                    count = completionQueue == 0 ? 0 : RdmaNativeNetworkDirect.Results(completionQueue, batch);
+                if (count > batch.Length)
+                    throw new IOException("The ND2 provider overran a completion-result array.");
                 for (var i = 0; i < count; i++)
                 {
-                    var result = batch[i];
-                    if (!pending.TryRemove(result.RequestContext, out var work)) throw new IOException("An ND2 completion has an unknown request cookie.");
+                    RdmaNativeNetworkDirect.Result result = batch[i];
+                    if (!pending.TryRemove(result.RequestContext, out Work? work))
+                        throw new IOException("An ND2 completion has an unknown request cookie.");
                     if (work.Receive)
                     {
                         try
                         {
                             if (result.Status < 0)
                             {
-                                Interlocked.Decrement(ref receiveOutstanding);
-                                if (Volatile.Read(ref aborted) == 0) RdmaNativeNetworkDirect.Check(result.Status, "ND2 receive completion");
+                                _ = Interlocked.Decrement(ref receiveOutstanding);
+                                if (Volatile.Read(ref aborted) == 0)
+                                    RdmaNativeNetworkDirect.Check(result.Status, "ND2 receive completion");
                             }
                             else
                             {
-                                if (result.BytesTransferred > work.Region.Buffer.Length) throw new IOException("The ND2 provider returned an oversized receive.");
-                                var copy = work.Region.Buffer.Slice(0, (int)result.BytesTransferred).ToArray();
-                                if (!receives.Writer.TryWrite(new(copy))) Interlocked.Decrement(ref receiveOutstanding);
+                                if (result.BytesTransferred > work.Region.Buffer.Length)
+                                    throw new IOException("The ND2 provider returned an oversized receive.");
+                                var copy = work.Region.Buffer[..(int)result.BytesTransferred].ToArray();
+                                if (!receives.Writer.TryWrite(new(copy)))
+                                    _ = Interlocked.Decrement(ref receiveOutstanding);
                             }
                         }
-                        finally { await work.Region.DisposeAsync().ConfigureAwait(false); }
+                        finally
+                        {
+                            await work.Region.DisposeAsync().ConfigureAwait(false);
+                        }
                     }
                     else
                     {
-                        if (result.Status < 0) work.Completion.TrySetException(new IOException($"ND2 work completion failed: 0x{(uint)result.Status:X8}."));
-                        else work.Completion.TrySetResult();
+                        _ = result.Status < 0
+                            ? work.Completion.TrySetException(new IOException($"ND2 work completion failed: 0x{(uint)result.Status:X8}."))
+                            : work.Completion.TrySetResult();
                     }
                 }
-                if (Volatile.Read(ref aborted) != 0 && pending.IsEmpty) { drained.TrySetResult(); return; }
-                if (count == 0) await Task.Delay(1).ConfigureAwait(false);
+                if (Volatile.Read(ref aborted) != 0 && pending.IsEmpty)
+                {
+                    _ = drained.TrySetResult();
+                    return;
+                }
+                if (count == 0)
+                    await Task.Delay(1).ConfigureAwait(false);
             }
         }
         catch (Exception ex)
         {
             Abort(ex);
             // 完成结果流失败时，先销毁队列对，再释放任何未完成缓冲区。
-            lock (nativeGate) { RdmaNativeNetworkDirect.Release(queuePair); queuePair = 0; }
-            foreach (var item in pending)
-                if (pending.TryRemove(item.Key, out var work)) work.Completion.TrySetException(ex);
-            drained.TrySetResult();
+            lock (nativeGate)
+            {
+                RdmaNativeNetworkDirect.Release(queuePair);
+                queuePair = 0;
+            }
+            foreach (KeyValuePair<nint, Work> item in pending)
+                if (pending.TryRemove(item.Key, out Work? work))
+                    _ = work.Completion.TrySetException(ex);
+            _ = drained.TrySetResult();
         }
     }
 
     /// <summary>在指针可表示的范围内分配原生请求标识。</summary>
-    private nint NextCookie() => checked((nint)Interlocked.Increment(ref sequence));
+    private nint NextCookie()
+    {
+        return checked((nint)Interlocked.Increment(ref sequence));
+    }
+
     /// <summary>提供显式中止，并保留原生缓冲区，直到完成队列收取结束。</summary>
-    public void Abort() => Abort(new IOException("The native RDMA endpoint was aborted."));
+    public void Abort()
+    {
+        Abort(new IOException("The native RDMA endpoint was aborted."));
+    }
+
     /// <summary>恰好清空一次队列对，并用原始失败原因唤醒上层接收。</summary>
     private void Abort(Exception error)
     {
-        Interlocked.CompareExchange(ref failure, error, null);
-        if (Interlocked.Exchange(ref aborted, 1) != 0) return;
+        _ = Interlocked.CompareExchange(ref failure, error, null);
+        if (Interlocked.Exchange(ref aborted, 1) != 0)
+            return;
         abortSignal.Cancel();
-        receives.Writer.TryComplete(error);
+        _ = receives.Writer.TryComplete(error);
         lock (nativeGate)
         {
             if (queuePair != 0)
             {
-                try { RdmaNativeNetworkDirect.Flush(queuePair); }
+                try
+                {
+                    RdmaNativeNetworkDirect.Flush(queuePair);
+                }
                 catch (IOException)
                 {
-                    RdmaNativeNetworkDirect.Release(queuePair); queuePair = 0;
-                    foreach (var item in pending)
-                        if (pending.TryRemove(item.Key, out var work)) work.Completion.TrySetException(error);
+                    RdmaNativeNetworkDirect.Release(queuePair);
+                    queuePair = 0;
+                    foreach (KeyValuePair<nint, Work> item in pending)
+                        if (pending.TryRemove(item.Key, out Work? work))
+                            _ = work.Completion.TrySetException(error);
                 }
             }
-            if (pending.IsEmpty) drained.TrySetResult();
+            if (pending.IsEmpty)
+                _ = drained.TrySetResult();
         }
     }
     /// <summary>开始取消、失败或释放后，阻止新工作进入。</summary>
@@ -479,7 +601,8 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
     /// <summary>先清空并收取完成结果，再释放队列对、内存、COM 引用、DLL 和 Winsock。</summary>
     public ValueTask DisposeAsync()
     {
-        lock (disposalGate) return new(disposalTask ??= DisposeCoreAsync());
+        lock (disposalGate)
+            return new(disposalTask ??= DisposeCoreAsync());
     }
 
     /// <summary>等待队列对清空、注册内存注销和原生引用销毁后，才完成共享释放任务。</summary>
@@ -489,15 +612,31 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
         Abort(new ObjectDisposedException(nameof(RdmaNativeWindowsEndpoint)));
         await drained.Task.ConfigureAwait(false);
         await poller.ConfigureAwait(false);
-        lock (nativeGate) { RdmaNativeNetworkDirect.Release(queuePair); queuePair = 0; }
-        foreach (var region in regions.Keys) await region.ReleaseAfterFenceAsync().ConfigureAwait(false);
         lock (nativeGate)
         {
-            RdmaNativeNetworkDirect.Release(connector); connector = 0;
-            RdmaNativeNetworkDirect.Release(completionQueue); completionQueue = 0;
-            if (file != 0) { _ = RdmaNativeNetworkDirect.CloseHandle(file); file = 0; }
-            RdmaNativeNetworkDirect.Release(adapter); adapter = 0;
-            if (module != 0) { NativeLibrary.Free(module); module = 0; }
+            RdmaNativeNetworkDirect.Release(queuePair);
+            queuePair = 0;
+        }
+        foreach (Region region in regions.Keys)
+            await region.ReleaseAfterFenceAsync().ConfigureAwait(false);
+        lock (nativeGate)
+        {
+            RdmaNativeNetworkDirect.Release(connector);
+            connector = 0;
+            RdmaNativeNetworkDirect.Release(completionQueue);
+            completionQueue = 0;
+            if (file != 0)
+            {
+                _ = RdmaNativeNetworkDirect.CloseHandle(file);
+                file = 0;
+            }
+            RdmaNativeNetworkDirect.Release(adapter);
+            adapter = 0;
+            if (module != 0)
+            {
+                NativeLibrary.Free(module);
+                module = 0;
+            }
         }
         winsock.Dispose();
     }
@@ -505,17 +644,21 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
     /// <summary>复制 BCL 端点序列化器生成的 Windows sockaddr 字节。</summary>
     private static byte[] Sockaddr(IPEndPoint address)
     {
-        var serialized = address.Serialize(); var bytes = new byte[serialized.Size];
-        for (var i = 0; i < bytes.Length; i++) bytes[i] = serialized[i];
+        SocketAddress serialized = address.Serialize();
+        var bytes = new byte[serialized.Size];
+        for (var i = 0; i < bytes.Length; i++)
+            bytes[i] = serialized[i];
         return bytes;
     }
     /// <summary>将原生 AF_INET 或 AF_INET6 地址转换为端点值。</summary>
     private static IPEndPoint ParseSockaddr(byte[] bytes)
     {
-        var family = (AddressFamily)(bytes[0] | (bytes[1] << 8));
-        if (family is not (AddressFamily.InterNetwork or AddressFamily.InterNetworkV6)) throw new IOException("Unsupported native RDMA address family.");
-        var address = new SocketAddress(family, bytes.Length);
-        for (var i = 0; i < bytes.Length; i++) address[i] = bytes[i];
+        AddressFamily family = (AddressFamily)(bytes[0] | (bytes[1] << 8));
+        if (family is not (AddressFamily.InterNetwork or AddressFamily.InterNetworkV6))
+            throw new IOException("Unsupported native RDMA address family.");
+        SocketAddress address = new(family, bytes.Length);
+        for (var i = 0; i < bytes.Length; i++)
+            address[i] = bytes[i];
         return (IPEndPoint)new IPEndPoint(family == AddressFamily.InterNetwork ? IPAddress.Any : IPAddress.IPv6Any, 0).Create(address);
     }
 
@@ -531,7 +674,12 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
         /// <summary>硬件完成栅栏生效后，才完成发起方任务。</summary>
         internal readonly TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         /// <summary>投递到队列对前先创建工作状态。</summary>
-        internal Work(nint cookie, Region region, bool receive) { Cookie = cookie; Region = region; Receive = receive; }
+        internal Work(nint cookie, Region region, bool receive)
+        {
+            Cookie = cookie;
+            Region = region;
+            Receive = receive;
+        }
     }
 
     /// <summary>已固定的原生内存区域，失败时延迟解除固定以保护内存安全。</summary>
@@ -552,68 +700,119 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
         /// <summary>等待初始化栅栏，防止端点释放正在注册的原生对象。</summary>
         private readonly TaskCompletionSource initialized = new(TaskCreationOptions.RunContinuationsAsynchronously);
         /// <summary>注册对象代表的托管内存范围。</summary>
-        internal Memory<byte> Buffer { get; }
+        internal Memory<byte> Buffer
+        {
+            get;
+        }
         /// <summary>原生本地散布与聚集元素。</summary>
-        internal RdmaNativeNetworkDirect.Sge ScatterGather { get; private set; }
+        internal RdmaNativeNetworkDirect.Sge ScatterGather
+        {
+            get; private set;
+        }
         /// <summary>包含远程提供程序令牌、可向对端公布的描述符。</summary>
-        internal SmbRdmaBufferDescriptor Descriptor { get; private set; }
+        internal SmbRdmaBufferDescriptor Descriptor
+        {
+            get; private set;
+        }
         /// <summary>尝试原生注册前，先固定托管缓冲区。</summary>
-        private Region(RdmaNativeWindowsEndpoint owner, Memory<byte> buffer) { this.owner = owner; Buffer = buffer; pin = buffer.Pin(); }
+        private Region(RdmaNativeWindowsEndpoint owner, Memory<byte> buffer)
+        {
+            this.owner = owner;
+            Buffer = buffer;
+            pin = buffer.Pin();
+        }
 
         /// <summary>创建、注册并跟踪内存区域；取消时释放已创建的部分资源。</summary>
         internal static async Task<Region> CreateAsync(RdmaNativeWindowsEndpoint owner, Memory<byte> buffer, uint flags, CancellationToken cancellationToken)
         {
-            var region = new Region(owner, buffer);
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, owner.abortSignal.Token);
+            Region region = new(owner, buffer);
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, owner.abortSignal.Token);
             try
             {
                 lock (owner.nativeGate)
                 {
                     owner.ThrowIfClosed();
-                    owner.regions.TryAdd(region, 0);
+                    _ = owner.regions.TryAdd(region, 0);
                     region.pointer = RdmaNativeNetworkDirect.CreateObject(owner.adapter, owner.file, RdmaNativeNetworkDirect.MemoryRegionId, 7);
                 }
                 var address = RdmaNativeNetworkDirect.PinnedPointer(region.pin);
                 await RdmaNativeOperation.RunAsync(region.pointer, overlapped => RdmaNativeNetworkDirect.Register(region.pointer, address, (nuint)buffer.Length, flags, overlapped), linked.Token).ConfigureAwait(false);
                 region.registered = true;
-                region.ScatterGather = new() { Buffer = address, Length = (uint)buffer.Length, Token = RdmaNativeNetworkDirect.Token(region.pointer, false) };
+                region.ScatterGather = new()
+                {
+                    Buffer = address,
+                    Length = (uint)buffer.Length,
+                    Token = RdmaNativeNetworkDirect.Token(region.pointer, false)
+                };
                 region.Descriptor = new(unchecked((ulong)address), RdmaNativeNetworkDirect.Token(region.pointer, true), (uint)buffer.Length);
-                lock (owner.nativeGate) owner.ThrowIfClosed();
+                lock (owner.nativeGate)
+                    owner.ThrowIfClosed();
                 return region;
             }
-            catch { region.initialized.TrySetResult(); await region.DisposeAsync().ConfigureAwait(false); throw; }
-            finally { region.initialized.TrySetResult(); }
+            catch
+            {
+                _ = region.initialized.TrySetResult();
+                await region.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+            finally
+            {
+                _ = region.initialized.TrySetResult();
+            }
         }
 
         /// <summary>只开始一次注销；提供程序报告栅栏失败时，内存继续保持固定。</summary>
         public ValueTask DisposeAsync()
         {
-            lock (gate) return new(disposal ??= DisposeCoreAsync());
+            lock (gate)
+                return new(disposal ??= DisposeCoreAsync());
         }
         /// <summary>注销成功后才解除固定；原生操作失败时延迟解除固定。</summary>
         private async Task DisposeCoreAsync()
         {
             await initialized.Task.ConfigureAwait(false);
-            if (pointer == 0) { pin.Dispose(); owner.regions.TryRemove(this, out _); return; }
+            if (pointer == 0)
+            {
+                pin.Dispose();
+                _ = owner.regions.TryRemove(this, out _);
+                return;
+            }
             if (registered)
             {
-                try { await RdmaNativeOperation.RunAsync(pointer, overlapped => RdmaNativeNetworkDirect.Deregister(pointer, overlapped), CancellationToken.None).ConfigureAwait(false); }
-                catch (Exception ex) { owner.Abort(ex); owner.regions.TryAdd(this, 0); throw; }
+                try
+                {
+                    await RdmaNativeOperation.RunAsync(pointer, overlapped => RdmaNativeNetworkDirect.Deregister(pointer, overlapped), CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    owner.Abort(ex);
+                    _ = owner.regions.TryAdd(this, 0);
+                    throw;
+                }
             }
             Release();
         }
         /// <summary>队列对销毁后，即使注销曾失败，也释放延迟保留的区域。</summary>
         internal async Task ReleaseAfterFenceAsync()
         {
-            try { await DisposeAsync().ConfigureAwait(false); }
-            catch (Exception) { lock (gate) Release(); }
+            try
+            {
+                await DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                lock (gate)
+                    Release();
+            }
         }
         /// <summary>只有调用方确认栅栏已生效后，才释放原生状态并解除固定。</summary>
         private void Release()
         {
             var value = Interlocked.Exchange(ref pointer, 0);
-            if (value != 0) RdmaNativeNetworkDirect.Release(value);
-            pin.Dispose(); owner.regions.TryRemove(this, out _);
+            if (value != 0)
+                RdmaNativeNetworkDirect.Release(value);
+            pin.Dispose();
+            _ = owner.regions.TryRemove(this, out _);
         }
     }
 
@@ -625,17 +824,31 @@ internal sealed class RdmaNativeWindowsEndpoint : ISmbRdmaEndpoint
         /// <summary>向对端公布的不可变描述符。</summary>
         private readonly IReadOnlyList<SmbRdmaBufferDescriptor> descriptors;
         /// <summary>全部片段注册成功后，再复制所有描述符。</summary>
-        internal Registration(Region[] segments) { this.segments = segments; descriptors = Array.AsReadOnly(segments.Select(s => s.Descriptor).ToArray()); }
+        internal Registration(Region[] segments)
+        {
+            this.segments = segments;
+            descriptors = Array.AsReadOnly(segments.Select(s => s.Descriptor).ToArray());
+        }
         /// <summary>按缓冲区顺序排列的远程可访问片段。</summary>
         public override IReadOnlyList<SmbRdmaBufferDescriptor> Descriptors => descriptors;
         /// <summary>注销每个片段；某个片段失败后仍继续清理其他片段。</summary>
         public override async ValueTask DisposeAsync()
         {
-            var values = Interlocked.Exchange(ref segments, null); if (values is null) return;
+            Region[]? values = Interlocked.Exchange(ref segments, null);
+            if (values is null)
+                return;
             List<Exception>? errors = null;
-            foreach (var region in values)
-                try { await region.DisposeAsync().ConfigureAwait(false); } catch (Exception ex) { (errors ??= []).Add(ex); }
-            if (errors is not null) throw new AggregateException("RDMA buffer deregistration failed.", errors);
+            foreach (Region? region in values)
+                try
+                {
+                    await region.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    (errors ??= []).Add(ex);
+                }
+            if (errors is not null)
+                throw new AggregateException("RDMA buffer deregistration failed.", errors);
         }
     }
 }
@@ -648,19 +861,25 @@ internal static class RdmaNativeOperation
     {
         cancellationToken.ThrowIfCancellationRequested();
         var @event = RdmaNativeNetworkDirect.CreateEvent(0, 0, 0, 0);
-        if (@event == 0) throw new Win32Exception(Marshal.GetLastPInvokeError(), "Could not allocate an ND2 completion event.");
+        if (@event == 0)
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Could not allocate an ND2 completion event.");
         var overlapped = RdmaNativeNetworkDirect.AllocateOverlapped(@event);
         try
         {
             var status = start(overlapped);
-            if (status != RdmaNativeNetworkDirect.Pending) { RdmaNativeNetworkDirect.Check(status, "ND2 overlapped operation"); return; }
+            if (status != RdmaNativeNetworkDirect.Pending)
+            {
+                RdmaNativeNetworkDirect.Check(status, "ND2 overlapped operation");
+                return;
+            }
             try
             {
                 while (true)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     status = RdmaNativeNetworkDirect.OverlappedResult(nativeObject, overlapped, false);
-                    if (status is not (RdmaNativeNetworkDirect.Pending or RdmaNativeNetworkDirect.Incomplete)) break;
+                    if (status is not (RdmaNativeNetworkDirect.Pending or RdmaNativeNetworkDirect.Incomplete))
+                        break;
                     await Task.Delay(1, cancellationToken).ConfigureAwait(false);
                 }
                 RdmaNativeNetworkDirect.Check(status, "ND2 overlapped completion");
@@ -674,6 +893,10 @@ internal static class RdmaNativeOperation
                 throw;
             }
         }
-        finally { RdmaNativeNetworkDirect.FreeOverlapped(overlapped); _ = RdmaNativeNetworkDirect.CloseHandle(@event); }
+        finally
+        {
+            RdmaNativeNetworkDirect.FreeOverlapped(overlapped);
+            _ = RdmaNativeNetworkDirect.CloseHandle(@event);
+        }
     }
 }

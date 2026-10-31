@@ -21,9 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-using MonsterSyncDrive.SMB.Protocol;
+using MonsterSyncDrive.Library.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>服务器通过 FileStandardInformation 报告的分配量、逻辑长度及句柄状态。</summary>
 /// <param name="AllocationSize">服务器报告的分配字节数，不必等于物理设备实际预留空间。</param>
@@ -80,26 +80,29 @@ public sealed record SmbSectorSizeInformation(uint LogicalBytesPerSector, uint P
     /// <exception cref="SmbProtocolException">记录截断、扇区大小无效或偏移越过物理扇区。</exception>
     internal static SmbSectorSizeInformation Parse(ReadOnlySpan<byte> data)
     {
-        Wire.Slice(data, 0, 28);
-        var logical = Wire.U32(data, 0);
-        var atomic = Wire.U32(data, 4);
-        var performance = Wire.U32(data, 8);
-        var effective = Wire.U32(data, 12);
+        _ = Wire.Slice(data, 0, 28);
+        uint logical = Wire.U32(data, 0);
+        uint atomic = Wire.U32(data, 4);
+        uint performance = Wire.U32(data, 8);
+        uint effective = Wire.U32(data, 12);
         if (!IsSectorSize(logical) || (atomic != 0 && (!IsSectorSize(atomic) || atomic < logical)) ||
             (performance != 0 && (!IsSectorSize(performance) || performance < logical)) ||
             (effective != 0 && (!IsSectorSize(effective) || effective < logical)))
             throw new SmbProtocolException("The server returned invalid sector geometry.");
         // 0xFFFFFFFF 是协议的未知偏移值，不可作为普通偏移参与对齐计算。
-        var sectorOffset = Wire.U32(data, 20);
-        var partitionOffset = Wire.U32(data, 24);
-        if (atomic != 0 && sectorOffset != uint.MaxValue && sectorOffset >= atomic)
-            throw new SmbProtocolException("The sector alignment offset is outside its physical sector.");
-        return new(logical, atomic, performance, effective, (SmbSectorSizeFlags)Wire.U32(data, 16),
+        uint sectorOffset = Wire.U32(data, 20);
+        uint partitionOffset = Wire.U32(data, 24);
+        return atomic != 0 && sectorOffset != uint.MaxValue && sectorOffset >= atomic
+            ? throw new SmbProtocolException("The sector alignment offset is outside its physical sector.")
+            : new(logical, atomic, performance, effective, (SmbSectorSizeFlags)Wire.U32(data, 16),
             sectorOffset == uint.MaxValue ? null : sectorOffset, partitionOffset == uint.MaxValue ? null : partitionOffset);
     }
 
     /// <summary>判断数值能否作为本实现支持的正数、二次幂扇区大小。</summary>
     /// <param name="value">服务器报告或调用者指定的字节数。</param>
     /// <returns>数值非零、可表示为正 int 且为二次幂时返回 true。</returns>
-    internal static bool IsSectorSize(uint value) => value != 0 && value <= int.MaxValue && (value & (value - 1)) == 0;
+    internal static bool IsSectorSize(uint value)
+    {
+        return value != 0 && value <= int.MaxValue && (value & (value - 1)) == 0;
+    }
 }

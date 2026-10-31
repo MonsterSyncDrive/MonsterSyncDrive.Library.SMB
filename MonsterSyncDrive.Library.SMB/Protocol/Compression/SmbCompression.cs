@@ -21,9 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-using System.Buffers.Binary;
-
-namespace MonsterSyncDrive.SMB.Protocol.Compression;
+namespace MonsterSyncDrive.Library.SMB.Protocol.Compression;
 
 /// <summary>实现 MS-SMB2 协商上下文及有界的链式、非链式压缩变换。</summary>
 /// <remarks>
@@ -53,9 +51,15 @@ internal sealed class SmbCompression
     /// <summary>成功解压的非 NONE 算法位集合，以原子或运算累计。</summary>
     private int receivedAlgorithmMask;
     /// <summary>按本客户端优先顺序排列的共同算法，只读且不暴露内部可变集合。</summary>
-    internal IReadOnlyList<SmbCompressionAlgorithm> Algorithms { get; }
+    internal IReadOnlyList<SmbCompressionAlgorithm> Algorithms
+    {
+        get;
+    }
     /// <summary>双方均提供链式能力时为真，接收链式头和发送混合片段均依赖此值。</summary>
-    internal bool SupportsChained { get; }
+    internal bool SupportsChained
+    {
+        get;
+    }
 
     /// <summary>读取此连接的实际压缩计数及使用过的算法集合，不把能力协商当成数据传输。</summary>
     internal SmbCompressionStatistics Statistics => new(
@@ -70,8 +74,10 @@ internal sealed class SmbCompression
     /// <param name="chained">是否共同允许链式片段。</param>
     private SmbCompression(SmbCompressionOptions options, SmbCompressionAlgorithm[] algorithms, bool chained)
     {
-        this.options = options; this.algorithms = [.. algorithms];
-        Algorithms = Array.AsReadOnly(algorithms); SupportsChained = chained;
+        this.options = options;
+        this.algorithms = [.. algorithms];
+        Algorithms = Array.AsReadOnly(algorithms);
+        SupportsChained = chained;
     }
 
     /// <summary>编码压缩能力上下文的数据区；不包含 8 字节 NEGOTIATE_CONTEXT 包装头。</summary>
@@ -81,11 +87,13 @@ internal sealed class SmbCompression
     internal static byte[] BuildNegotiateContext(SmbCompressionOptions options)
     {
         options = options.Snapshot();
-        if (!options.Enabled) throw new ArgumentException("Compression is disabled.", nameof(options));
-        var result = new byte[8 + options.Algorithms.Count * 2];
+        if (!options.Enabled)
+            throw new ArgumentException("Compression is disabled.", nameof(options));
+        byte[] result = new byte[8 + (options.Algorithms.Count * 2)];
         Wire.Put16(result, 0, checked((ushort)options.Algorithms.Count));
         Wire.Put32(result, 4, options.AllowChained ? 1u : 0);
-        for (var i = 0; i < options.Algorithms.Count; i++) Wire.Put16(result, 8 + i * 2, (ushort)options.Algorithms[i]);
+        for (int i = 0; i < options.Algorithms.Count; i++)
+            Wire.Put16(result, 8 + (i * 2), (ushort)options.Algorithms[i]);
         return result;
     }
 
@@ -97,32 +105,38 @@ internal sealed class SmbCompression
     internal static SmbCompression? Negotiate(SmbCompressionOptions options, ReadOnlySpan<byte> serverContext)
     {
         options = options.Snapshot();
-        if (!options.Enabled) throw Invalid("The server returned unrequested compression capabilities.");
-        if (serverContext.Length < 10) throw Invalid("Truncated compression capabilities.");
-        var count = Wire.U16(serverContext, 0); var flags = Wire.U32(serverContext, 4);
-        if (count == 0 || count > 6 || serverContext.Length != 8 + count * 2 || (flags & ~1u) != 0)
+        if (!options.Enabled)
+            throw Invalid("The server returned unrequested compression capabilities.");
+        if (serverContext.Length < 10)
+            throw Invalid("Truncated compression capabilities.");
+        ushort count = Wire.U16(serverContext, 0);
+        uint flags = Wire.U32(serverContext, 4);
+        if (count == 0 || count > 6 || serverContext.Length != 8 + (count * 2) || (flags & ~1u) != 0)
             throw Invalid("Invalid compression capabilities.");
-        var server = new HashSet<SmbCompressionAlgorithm>();
-        for (var i = 0; i < count; i++)
+        HashSet<SmbCompressionAlgorithm> server = new();
+        for (int i = 0; i < count; i++)
         {
-            var algorithm = (SmbCompressionAlgorithm)Wire.U16(serverContext, 8 + i * 2);
+            SmbCompressionAlgorithm algorithm = (SmbCompressionAlgorithm)Wire.U16(serverContext, 8 + (i * 2));
             if (!server.Add(algorithm) || !Enum.IsDefined(algorithm) ||
                 (algorithm != SmbCompressionAlgorithm.None && !options.Algorithms.Contains(algorithm)))
                 throw Invalid("The server selected an unoffered or duplicate compression algorithm.");
         }
         var selected = options.Algorithms.Where(server.Contains).ToArray();
-        if (selected.Length == 0) return null;
-        var chained = options.AllowChained && (flags & 1) != 0;
-        if (!chained && selected.All(a => a == SmbCompressionAlgorithm.PatternV1))
-            throw Invalid("The server selected pattern compression without chained compression.");
-        return new SmbCompression(options, selected, chained);
+        if (selected.Length == 0)
+            return null;
+        bool chained = options.AllowChained && (flags & 1) != 0;
+        return !chained && selected.All(a => a == SmbCompressionAlgorithm.PatternV1)
+            ? throw Invalid("The server selected pattern compression without chained compression.")
+            : new SmbCompression(options, selected, chained);
     }
 
     /// <summary>仅检查 FC SMB 魔数；后续解码仍必须验证协商、完整头部和输出大小。</summary>
     /// <param name="packet">不含传输层长度前缀的消息。</param>
     /// <returns>消息以压缩变换标识开始时为真。</returns>
     internal static bool IsCompressed(ReadOnlySpan<byte> packet)
-        => packet.Length >= 4 && packet[..4].SequenceEqual(new byte[] { 0xFC, 0x53, 0x4D, 0x42 });
+    {
+        return packet.Length >= 4 && packet[..4].SequenceEqual(new byte[] { 0xFC, 0x53, 0x4D, 0x42 });
+    }
 
     /// <summary>按共同能力压缩一条已签名或将被加密的 SMB2 消息。</summary>
     /// <param name="packet">完整 FE SMB 消息；不能是另一个压缩或加密变换。</param>
@@ -135,12 +149,15 @@ internal sealed class SmbCompression
         ValidateSmbMessage(packet);
         if (uncompressedPrefixLength < 0 || uncompressedPrefixLength > packet.Length)
             throw new ArgumentOutOfRangeException(nameof(uncompressedPrefixLength));
-        if (packet.Length < options.MinimumMessageSize || uncompressedPrefixLength == packet.Length) return packet.ToArray();
-        var compressed = SupportsChained ? CompressChained(packet, uncompressedPrefixLength) : CompressUnchained(packet, uncompressedPrefixLength);
-        if (compressed.Length >= packet.Length || packet.Length - compressed.Length < options.MinimumSavingsBytes) return packet.ToArray();
-        Interlocked.Add(ref originalBytesSent, packet.Length); Interlocked.Add(ref compressedBytesSent, compressed.Length);
-        Interlocked.Or(ref sentAlgorithmMask, UsedAlgorithmMask(compressed));
-        Interlocked.Increment(ref compressedMessagesSent);
+        if (packet.Length < options.MinimumMessageSize || uncompressedPrefixLength == packet.Length)
+            return packet.ToArray();
+        byte[] compressed = SupportsChained ? CompressChained(packet, uncompressedPrefixLength) : CompressUnchained(packet, uncompressedPrefixLength);
+        if (compressed.Length >= packet.Length || packet.Length - compressed.Length < options.MinimumSavingsBytes)
+            return packet.ToArray();
+        _ = Interlocked.Add(ref originalBytesSent, packet.Length);
+        _ = Interlocked.Add(ref compressedBytesSent, compressed.Length);
+        _ = Interlocked.Or(ref sentAlgorithmMask, UsedAlgorithmMask(compressed));
+        _ = Interlocked.Increment(ref compressedMessagesSent);
         return compressed;
     }
 
@@ -152,11 +169,14 @@ internal sealed class SmbCompression
     private byte[] CompressUnchained(ReadOnlySpan<byte> packet, int prefixLength)
     {
         var algorithm = Algorithms.First(a => a != SmbCompressionAlgorithm.PatternV1);
-        var encoded = SmbCompressionCodec.Compress(algorithm, packet[prefixLength..]);
-        var output = new byte[checked(16 + prefixLength + encoded.Length)];
-        WriteProtocolId(output); Wire.Put32(output, 4, (uint)(packet.Length - prefixLength));
-        Wire.Put16(output, 8, (ushort)algorithm); Wire.Put32(output, 12, (uint)prefixLength);
-        packet[..prefixLength].CopyTo(output.AsSpan(16)); encoded.CopyTo(output, 16 + prefixLength);
+        byte[] encoded = SmbCompressionCodec.Compress(algorithm, packet[prefixLength..]);
+        byte[] output = new byte[checked(16 + prefixLength + encoded.Length)];
+        WriteProtocolId(output);
+        Wire.Put32(output, 4, (uint)(packet.Length - prefixLength));
+        Wire.Put16(output, 8, (ushort)algorithm);
+        Wire.Put32(output, 12, (uint)prefixLength);
+        packet[..prefixLength].CopyTo(output.AsSpan(16));
+        encoded.CopyTo(output, 16 + prefixLength);
         return output;
     }
 
@@ -167,28 +187,35 @@ internal sealed class SmbCompression
     /// <remarks>重复扫描为线性复杂度；只扫描协商了 PatternV1 的连接，避免虚报算法能力。</remarks>
     private byte[] CompressChained(ReadOnlySpan<byte> packet, int prefixLength)
     {
-        var result = new List<byte>();
-        result.AddRange(new byte[] { 0xFC, 0x53, 0x4D, 0x42 }); Append32(result, (uint)packet.Length);
-        if (prefixLength != 0) AppendPayload(result, SmbCompressionAlgorithm.None, packet[..prefixLength], 0);
-        var position = prefixLength;
+        List<byte> result = new();
+        result.AddRange(new byte[] { 0xFC, 0x53, 0x4D, 0x42 });
+        Append32(result, (uint)packet.Length);
+        if (prefixLength != 0)
+            AppendPayload(result, SmbCompressionAlgorithm.None, packet[..prefixLength], 0);
+        int position = prefixLength;
         while (position < packet.Length)
         {
             var (patternStart, patternLength) = algorithms.Contains(SmbCompressionAlgorithm.PatternV1)
                 ? FindPattern(packet, position) : (packet.Length, 0);
             if (patternStart > position)
             {
-                var plain = packet.Slice(position, patternStart - position);
+                var plain = packet[position..patternStart];
                 var algorithm = Algorithms.FirstOrDefault(a => a != SmbCompressionAlgorithm.PatternV1);
-                var encoded = algorithm != SmbCompressionAlgorithm.None && plain.Length > 1024
+                byte[] encoded = algorithm != SmbCompressionAlgorithm.None && plain.Length > 1024
                     ? SmbCompressionCodec.Compress(algorithm, plain) : [];
-                if (encoded.Length != 0 && encoded.Length + 4 < plain.Length) AppendPayload(result, algorithm, encoded, plain.Length);
-                else AppendPayload(result, SmbCompressionAlgorithm.None, plain, 0);
+                if (encoded.Length != 0 && encoded.Length + 4 < plain.Length)
+                    AppendPayload(result, algorithm, encoded, plain.Length);
+                else
+                    AppendPayload(result, SmbCompressionAlgorithm.None, plain, 0);
                 position = patternStart;
             }
             if (patternLength > 0)
             {
-                var pattern = new byte[8]; pattern[0] = packet[position]; Wire.Put32(pattern, 4, (uint)patternLength);
-                AppendPayload(result, SmbCompressionAlgorithm.PatternV1, pattern, 0); position += patternLength;
+                byte[] pattern = new byte[8];
+                pattern[0] = packet[position];
+                Wire.Put32(pattern, 4, (uint)patternLength);
+                AppendPayload(result, SmbCompressionAlgorithm.PatternV1, pattern, 0);
+                position += patternLength;
             }
         }
         return result.ToArray();
@@ -202,9 +229,11 @@ internal sealed class SmbCompression
     {
         while (position < packet.Length)
         {
-            var end = position + 1;
-            while (end < packet.Length && packet[end] == packet[position]) end++;
-            if (end - position > 32) return (position, end - position);
+            int end = position + 1;
+            while (end < packet.Length && packet[end] == packet[position])
+                end++;
+            if (end - position > 32)
+                return (position, end - position);
             position = end;
         }
         return (packet.Length, 0);
@@ -217,10 +246,13 @@ internal sealed class SmbCompression
     /// <param name="originalSize">普通压缩块的展开大小；NONE 和模式为零。</param>
     private static void AppendPayload(List<byte> result, SmbCompressionAlgorithm algorithm, ReadOnlySpan<byte> payload, int originalSize)
     {
-        Append16(result, (ushort)algorithm); Append16(result, result.Count == 10 ? (ushort)1 : (ushort)0);
+        Append16(result, (ushort)algorithm);
+        Append16(result, result.Count == 10 ? (ushort)1 : (ushort)0);
         Append32(result, checked((uint)(payload.Length + (originalSize == 0 ? 0 : 4))));
-        if (originalSize != 0) Append32(result, (uint)originalSize);
-        foreach (var value in payload) result.Add(value);
+        if (originalSize != 0)
+            Append32(result, (uint)originalSize);
+        foreach (byte value in payload)
+            result.Add(value);
     }
 
     /// <summary>先验证协商和输出限额，再解码一条压缩变换消息。</summary>
@@ -234,20 +266,24 @@ internal sealed class SmbCompression
         {
             if (!IsCompressed(packet) || packet.Length < 16 || maximumSize < 64)
                 throw Invalid("Invalid SMB compression transform.");
-            var flags = Wire.U16(packet, 10);
-            var result = flags switch
+            ushort flags = Wire.U16(packet, 10);
+            byte[] result = flags switch
             {
                 0 => DecompressUnchained(packet, maximumSize),
                 1 when SupportsChained => DecompressChained(packet, maximumSize),
                 _ => throw Invalid("Unnegotiated compression transform flags.")
             };
             ValidateSmbMessage(result);
-            Interlocked.Add(ref originalBytesReceived, result.Length); Interlocked.Add(ref compressedBytesReceived, packet.Length);
-            Interlocked.Or(ref receivedAlgorithmMask, UsedAlgorithmMask(packet));
-            Interlocked.Increment(ref compressedMessagesReceived);
+            _ = Interlocked.Add(ref originalBytesReceived, result.Length);
+            _ = Interlocked.Add(ref compressedBytesReceived, packet.Length);
+            _ = Interlocked.Or(ref receivedAlgorithmMask, UsedAlgorithmMask(packet));
+            _ = Interlocked.Increment(ref compressedMessagesReceived);
             return result;
         }
-        catch (OverflowException ex) { throw new SmbProtocolException("Compression size overflow.", ex); }
+        catch (OverflowException ex)
+        {
+            throw new SmbProtocolException("Compression size overflow.", ex);
+        }
     }
 
     /// <summary>使用经过核对的 Offset 和片段大小重建非链式消息。</summary>
@@ -257,15 +293,18 @@ internal sealed class SmbCompression
     /// <remarks>以 64 位无符号算术核对 Offset 加片段长度，避免加法回绕后分配小缓冲。</remarks>
     private byte[] DecompressUnchained(ReadOnlySpan<byte> packet, int maximumSize)
     {
-        var original = Wire.U32(packet, 4); var offset = Wire.U32(packet, 12);
-        var total = checked((ulong)original + offset);
+        uint original = Wire.U32(packet, 4);
+        uint offset = Wire.U32(packet, 12);
+        ulong total = checked((ulong)original + offset);
         if (original == 0 || total < 64 || total > (ulong)maximumSize || total > 0xFFFFFF || offset > packet.Length - 16)
             throw Invalid("Invalid unchained compression sizes.");
-        var algorithm = (SmbCompressionAlgorithm)Wire.U16(packet, 8);
+        SmbCompressionAlgorithm algorithm = (SmbCompressionAlgorithm)Wire.U16(packet, 8);
         if (algorithm is SmbCompressionAlgorithm.None or SmbCompressionAlgorithm.PatternV1 || !algorithms.Contains(algorithm))
             throw Invalid("Unnegotiated unchained compression algorithm.");
-        var decoded = SmbCompressionCodec.Decompress(algorithm, packet[(16 + (int)offset)..], (int)original);
-        var result = new byte[(int)total]; packet.Slice(16, (int)offset).CopyTo(result); decoded.CopyTo(result, (int)offset);
+        byte[] decoded = SmbCompressionCodec.Decompress(algorithm, packet[(16 + (int)offset)..], (int)original);
+        byte[] result = new byte[(int)total];
+        packet.Slice(16, (int)offset).CopyTo(result);
+        decoded.CopyTo(result, (int)offset);
         return result;
     }
 
@@ -276,44 +315,57 @@ internal sealed class SmbCompression
     /// <remarks>每次至少消费一个完整片段头，允许空的原样片段；拒绝重复首段标志、模式重复量越界以及解码长度不符。</remarks>
     private byte[] DecompressChained(ReadOnlySpan<byte> packet, int maximumSize)
     {
-        var original = Wire.U32(packet, 4);
-        if (original < 64 || original > maximumSize || original > 0xFFFFFF) throw Invalid("Invalid chained output size.");
-        var output = new byte[(int)original]; var source = 8; var destination = 0;
+        uint original = Wire.U32(packet, 4);
+        if (original < 64 || original > maximumSize || original > 0xFFFFFF)
+            throw Invalid("Invalid chained output size.");
+        byte[] output = new byte[(int)original];
+        int source = 8;
+        int destination = 0;
         while (source < packet.Length)
         {
-            if (source > packet.Length - 8) throw Invalid("Truncated chained payload header.");
-            var algorithm = (SmbCompressionAlgorithm)Wire.U16(packet, source);
-            var flags = Wire.U16(packet, source + 2); var length = Wire.U32(packet, source + 4);
+            if (source > packet.Length - 8)
+                throw Invalid("Truncated chained payload header.");
+            SmbCompressionAlgorithm algorithm = (SmbCompressionAlgorithm)Wire.U16(packet, source);
+            ushort flags = Wire.U16(packet, source + 2);
+            uint length = Wire.U32(packet, source + 4);
             if (flags != (source == 8 ? 1 : 0) || length > packet.Length - source - 8 ||
                 (algorithm != SmbCompressionAlgorithm.None && !algorithms.Contains(algorithm)))
                 throw Invalid("Invalid or unnegotiated chained payload.");
-            source += 8; var payload = packet.Slice(source, (int)length); source += (int)length;
+            source += 8;
+            var payload = packet.Slice(source, (int)length);
+            source += (int)length;
             int count;
             if (algorithm == SmbCompressionAlgorithm.None)
             {
                 count = payload.Length;
-                if (count > output.Length - destination) throw Invalid("Chained output exceeds its declared size.");
+                if (count > output.Length - destination)
+                    throw Invalid("Chained output exceeds its declared size.");
                 payload.CopyTo(output.AsSpan(destination));
             }
             else if (algorithm == SmbCompressionAlgorithm.PatternV1)
             {
-                if (payload.Length != 8) throw Invalid("Invalid pattern payload size.");
-                var repetitions = Wire.U32(payload, 4);
-                if (repetitions > output.Length - destination) throw Invalid("Pattern exceeds its declared output size.");
-                count = (int)repetitions; output.AsSpan(destination, count).Fill(payload[0]);
+                if (payload.Length != 8)
+                    throw Invalid("Invalid pattern payload size.");
+                uint repetitions = Wire.U32(payload, 4);
+                if (repetitions > output.Length - destination)
+                    throw Invalid("Pattern exceeds its declared output size.");
+                count = (int)repetitions;
+                output.AsSpan(destination, count).Fill(payload[0]);
             }
             else
             {
-                if (payload.Length < 4) throw Invalid("Truncated chained compressed payload.");
-                var declared = Wire.U32(payload, 0);
-                if (declared > output.Length - destination) throw Invalid("Chained payload exceeds its declared output size.");
+                if (payload.Length < 4)
+                    throw Invalid("Truncated chained compressed payload.");
+                uint declared = Wire.U32(payload, 0);
+                if (declared > output.Length - destination)
+                    throw Invalid("Chained payload exceeds its declared output size.");
                 count = (int)declared;
-                var decoded = SmbCompressionCodec.Decompress(algorithm, payload[4..], count); decoded.CopyTo(output, destination);
+                byte[] decoded = SmbCompressionCodec.Decompress(algorithm, payload[4..], count);
+                decoded.CopyTo(output, destination);
             }
             destination += count;
         }
-        if (destination != output.Length) throw Invalid("Chained compression output size mismatch.");
-        return output;
+        return destination != output.Length ? throw Invalid("Chained compression output size mismatch.") : output;
     }
 
     /// <summary>从已经验证过的压缩变换提取实际使用的非 NONE 算法位集合。</summary>
@@ -322,11 +374,12 @@ internal sealed class SmbCompression
     /// <remarks>仅遍历有界片段头，不检查数据内容；不把全 NONE 包装、零重复模式或零展开长度算作算法使用。</remarks>
     private static int UsedAlgorithmMask(ReadOnlySpan<byte> packet)
     {
-        if (Wire.U16(packet, 10) == 0) return 1 << Wire.U16(packet, 8);
-        var mask = 0;
-        for (var offset = 8; offset < packet.Length;)
+        if (Wire.U16(packet, 10) == 0)
+            return 1 << Wire.U16(packet, 8);
+        int mask = 0;
+        for (int offset = 8; offset < packet.Length;)
         {
-            var algorithm = Wire.U16(packet, offset);
+            ushort algorithm = Wire.U16(packet, offset);
             if (algorithm != 0 && Wire.U32(packet, offset + (algorithm == (ushort)SmbCompressionAlgorithm.PatternV1 ? 12 : 8)) != 0)
                 mask |= 1 << algorithm;
             offset = checked(offset + 8 + (int)Wire.U32(packet, offset + 4));
@@ -339,8 +392,10 @@ internal sealed class SmbCompression
     /// <returns>按线路编号排序、不含 NONE 的算法列表。</returns>
     private static IReadOnlyList<SmbCompressionAlgorithm> AlgorithmsFromMask(int mask)
     {
-        var values = new List<SmbCompressionAlgorithm>(5);
-        for (var value = 1; value <= 5; value++) if ((mask & (1 << value)) != 0) values.Add((SmbCompressionAlgorithm)value);
+        List<SmbCompressionAlgorithm> values = new(5);
+        for (int value = 1; value <= 5; value++)
+            if ((mask & (1 << value)) != 0)
+                values.Add((SmbCompressionAlgorithm)value);
         return values.AsReadOnly();
     }
 
@@ -354,18 +409,34 @@ internal sealed class SmbCompression
     }
     /// <summary>写入压缩变换的 FC SMB 魔数。</summary>
     /// <param name="output">至少 4 字节的目标缓冲。</param>
-    private static void WriteProtocolId(Span<byte> output) => new byte[] { 0xFC, 0x53, 0x4D, 0x42 }.CopyTo(output);
+    private static void WriteProtocolId(Span<byte> output)
+    {
+        new byte[] { 0xFC, 0x53, 0x4D, 0x42 }.CopyTo(output);
+    }
+
     /// <summary>按线路小端顺序添加 16 位字段。</summary>
     /// <param name="output">目标缓冲。</param>
     /// <param name="value">字段值。</param>
-    private static void Append16(List<byte> output, ushort value) { output.Add((byte)value); output.Add((byte)(value >> 8)); }
+    private static void Append16(List<byte> output, ushort value)
+    {
+        output.Add((byte)value);
+        output.Add((byte)(value >> 8));
+    }
     /// <summary>按线路小端顺序添加 32 位字段。</summary>
     /// <param name="output">目标缓冲。</param>
     /// <param name="value">字段值。</param>
     private static void Append32(List<byte> output, uint value)
-    { output.Add((byte)value); output.Add((byte)(value >> 8)); output.Add((byte)(value >> 16)); output.Add((byte)(value >> 24)); }
+    {
+        output.Add((byte)value);
+        output.Add((byte)(value >> 8));
+        output.Add((byte)(value >> 16));
+        output.Add((byte)(value >> 24));
+    }
     /// <summary>为畸形网络压缩数据创建统一的协议异常。</summary>
     /// <param name="message">不含凭据的诊断信息。</param>
     /// <returns>供调用方抛出的异常。</returns>
-    private static SmbProtocolException Invalid(string message) => new(message);
+    private static SmbProtocolException Invalid(string message)
+    {
+        return new(message);
+    }
 }

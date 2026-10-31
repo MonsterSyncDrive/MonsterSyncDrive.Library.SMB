@@ -21,9 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-using MonsterSyncDrive.SMB.Protocol;
-
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>在会话范围内分发主动机会锁撤销通知，并处理 CREATE 句柄注册竞争。</summary>
 public sealed partial class SmbClient
@@ -38,7 +36,8 @@ public sealed partial class SmbClient
     /// <summary>在 CREATE 可能发送之前开启注册竞争保护窗口。</summary>
     internal void BeginOplockOpen()
     {
-        lock (oplockDispatchGate) pendingOplockOpens++;
+        lock (oplockDispatchGate)
+            pendingOplockOpens++;
     }
 
     /// <summary>结束一个 CREATE 保护窗口；没有后续注册机会时丢弃未匹配通知。</summary>
@@ -64,10 +63,10 @@ public sealed partial class SmbClient
         {
             lock (oplockDispatchGate)
             {
-                for (var i = 0; i < deferredOplockBreaks.Count;)
+                for (int i = 0; i < deferredOplockBreaks.Count;)
                 {
-                    var notification = deferredOplockBreaks[i];
-                    if (TryDispatchOplockBreak(notification.Packet, notification.WasEncrypted))
+                    (byte[]? Packet, bool WasEncrypted) = deferredOplockBreaks[i];
+                    if (TryDispatchOplockBreak(Packet, WasEncrypted))
                         deferredOplockBreaks.RemoveAt(i);
                     else
                         i++;
@@ -105,7 +104,7 @@ public sealed partial class SmbClient
     /// <returns>已知句柄接收了该通知时返回 true，包括正在关闭的句柄。</returns>
     private bool TryDispatchOplockBreak(byte[] packet, bool wasEncrypted)
     {
-        foreach (var share in shares.Keys)
+        foreach (SmbShare share in shares.Keys)
             if (share.TryQueueOplockBreak(packet, wasEncrypted))
                 return true;
         return false;
@@ -116,8 +115,9 @@ public sealed partial class SmbClient
     /// <remarks>只要会话仍有其他可用通道，单条绑定通道失败就不应撤销所有缓存授予。</remarks>
     internal void InvalidateAllOplocks(Exception error)
     {
-        lock (oplockDispatchGate) deferredOplockBreaks.Clear();
-        foreach (var share in shares.Keys)
+        lock (oplockDispatchGate)
+            deferredOplockBreaks.Clear();
+        foreach (SmbShare share in shares.Keys)
             share.InvalidateOplocks(error);
     }
 }

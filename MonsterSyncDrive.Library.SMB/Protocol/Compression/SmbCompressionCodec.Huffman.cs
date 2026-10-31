@@ -24,7 +24,7 @@
 using System.Buffers.Binary;
 using System.Numerics;
 
-namespace MonsterSyncDrive.SMB.Protocol.Compression;
+namespace MonsterSyncDrive.Library.SMB.Protocol.Compression;
 
 /// <summary>承载 MS-XCA LZ77 加 Huffman 的有界逐块实现。</summary>
 /// <remarks>压缩端生成规范码；解压端也接受独立 Windows 编码器生成的不同合法码表。</remarks>
@@ -50,58 +50,71 @@ internal static partial class SmbCompressionCodec
     /// </remarks>
     private static byte[] CompressHuffman(ReadOnlySpan<byte> input)
     {
-        var output = new List<byte>(input.Length + input.Length / 8 + 512);
-        var heads = new int[65536];
-        var start = 0;
+        List<byte> output = new(input.Length + (input.Length / 8) + 512);
+        int[] heads = new int[65536];
+        int start = 0;
         do
         {
             var chunk = input.Slice(start, Math.Min(65536, input.Length - start));
-            var tokens = new List<HuffmanToken>(); var frequencies = new int[512];
+            List<HuffmanToken> tokens = [];
+            int[] frequencies = new int[512];
             Array.Fill(heads, -1);
-            for (var position = 0; position < chunk.Length;)
+            for (int position = 0; position < chunk.Length;)
             {
-                var match = FindMatch(chunk, position, chunk.Length, 65535, int.MaxValue, heads);
-                if (match.Length < 3)
+                var (Distance, Length) = FindMatch(chunk, position, chunk.Length, 65535, int.MaxValue, heads);
+                if (Length < 3)
                 {
-                    var symbol = chunk[position++]; tokens.Add(new(symbol, 0, 0)); frequencies[symbol]++;
+                    byte symbol = chunk[position++];
+                    tokens.Add(new(symbol, 0, 0));
+                    frequencies[symbol]++;
                 }
                 else
                 {
-                    var symbol = 256 + Math.Min(match.Length - 3, 15) + 16 * BitOperations.Log2((uint)match.Distance);
-                    tokens.Add(new(symbol, match.Distance, match.Length)); frequencies[symbol]++;
-                    UpdateHeads(chunk, position + 1, position + match.Length, heads); position += match.Length;
+                    int symbol = 256 + Math.Min(Length - 3, 15) + (16 * BitOperations.Log2((uint)Distance));
+                    tokens.Add(new(symbol, Distance, Length));
+                    frequencies[symbol]++;
+                    UpdateHeads(chunk, position + 1, position + Length, heads);
+                    position += Length;
                 }
             }
             frequencies[256]++;
-            var lengths = BuildHuffmanLengths(frequencies);
-            var codes = BuildHuffmanCodes(lengths);
-            var writer = new HuffmanWriter();
-            for (var symbol = 0; symbol < 512; symbol += 2)
+            byte[] lengths = BuildHuffmanLengths(frequencies);
+            uint[] codes = BuildHuffmanCodes(lengths);
+            HuffmanWriter writer = new();
+            for (int symbol = 0; symbol < 512; symbol += 2)
                 writer.Data[symbol / 2] = (byte)(lengths[symbol] | (lengths[symbol + 1] << 4));
             foreach (var token in tokens)
             {
                 writer.WriteBits(lengths[token.Symbol], codes[token.Symbol]);
-                if (token.Symbol < 256) continue;
-                var length = token.Length - 3;
+                if (token.Symbol < 256)
+                    continue;
+                int length = token.Length - 3;
                 if (length >= 15)
                 {
-                    var extension = length - 15;
-                    if (extension < 255) writer.WriteByte((byte)extension);
+                    int extension = length - 15;
+                    if (extension < 255)
+                        writer.WriteByte((byte)extension);
                     else
                     {
                         writer.WriteByte(255);
-                        if (length < 65536) writer.Write16((ushort)length);
-                        else { writer.Write16(0); writer.Write32((uint)length); }
+                        if (length < 65536)
+                            writer.Write16((ushort)length);
+                        else
+                        {
+                            writer.Write16(0);
+                            writer.Write32((uint)length);
+                        }
                     }
                 }
-                var distanceBits = BitOperations.Log2((uint)token.Distance);
+                int distanceBits = BitOperations.Log2((uint)token.Distance);
                 writer.WriteBits(distanceBits, (uint)token.Distance - (1u << distanceBits));
             }
             // 最后一个块附带结束符；前面的满块由展开字节数确定边界。
             // 给这些满块再添加结束符会改变后续块头的字节位置，使独立解码器无法正确对齐。
             if (start + chunk.Length == input.Length)
                 writer.WriteBits(lengths[256], codes[256]);
-            output.AddRange(writer.Finish()); start += chunk.Length;
+            output.AddRange(writer.Finish());
+            start += chunk.Length;
         } while (start < input.Length);
         return output.ToArray();
     }
@@ -116,35 +129,46 @@ internal static partial class SmbCompressionCodec
     /// </remarks>
     private static byte[] BuildHuffmanLengths(int[] frequencies)
     {
-        var queue = new PriorityQueue<int, (int Frequency, int Order)>();
-        var nodes = new List<HuffmanNode>(1023); var order = 0;
-        for (var symbol = 0; symbol < 512; symbol++)
+        PriorityQueue<int, (int Frequency, int Order)> queue = new();
+        List<HuffmanNode> nodes = new(1023);
+        int order = 0;
+        for (int symbol = 0; symbol < 512; symbol++)
             if (frequencies[symbol] != 0)
             {
-                nodes.Add(new(symbol, -1, -1)); queue.Enqueue(nodes.Count - 1, (frequencies[symbol], order++));
+                nodes.Add(new(symbol, -1, -1));
+                queue.Enqueue(nodes.Count - 1, (frequencies[symbol], order++));
             }
         if (queue.Count == 1)
         {
-            var dummy = frequencies[0] == 0 ? 0 : 1;
-            nodes.Add(new(dummy, -1, -1)); queue.Enqueue(nodes.Count - 1, (1, order++));
+            int dummy = frequencies[0] == 0 ? 0 : 1;
+            nodes.Add(new(dummy, -1, -1));
+            queue.Enqueue(nodes.Count - 1, (1, order++));
         }
         while (queue.Count > 1)
         {
-            queue.TryDequeue(out var left, out var leftPriority); queue.TryDequeue(out var right, out var rightPriority);
+            _ = queue.TryDequeue(out int left, out var leftPriority);
+            _ = queue.TryDequeue(out int right, out var rightPriority);
             nodes.Add(new(-1, left, right));
             queue.Enqueue(nodes.Count - 1, (leftPriority.Frequency + rightPriority.Frequency, order++));
         }
-        var lengths = new byte[512];
-        var stack = new Stack<(int Node, int Depth)>(); stack.Push((queue.Dequeue(), 0));
+        byte[] lengths = new byte[512];
+        Stack<(int Node, int Depth)> stack = new();
+        stack.Push((queue.Dequeue(), 0));
         while (stack.TryPop(out var next))
         {
             var node = nodes[next.Node];
-            if (node.Symbol >= 0) lengths[node.Symbol] = checked((byte)next.Depth);
-            else { stack.Push((node.Left, next.Depth + 1)); stack.Push((node.Right, next.Depth + 1)); }
+            if (node.Symbol >= 0)
+                lengths[node.Symbol] = checked((byte)next.Depth);
+            else
+            {
+                stack.Push((node.Left, next.Depth + 1));
+                stack.Push((node.Right, next.Depth + 1));
+            }
         }
         // 完整的 9 位字母表始终合法，可避免偏斜频率树生成超过线路上限 15 位的码字。
         // 回退后仍通过真实的 LZ77 匹配压缩数据，并非用原样数据伪装成压缩流。
-        if (lengths.Any(length => length > 15)) Array.Fill(lengths, (byte)9);
+        if (lengths.Any(length => length > 15))
+            Array.Fill(lengths, (byte)9);
         return lengths;
     }
 
@@ -155,12 +179,20 @@ internal static partial class SmbCompressionCodec
     private static uint[] BuildHuffmanCodes(ReadOnlySpan<byte> lengths)
     {
         Span<int> counts = stackalloc int[16];
-        foreach (var length in lengths) if (length != 0) counts[length]++;
+        foreach (byte length in lengths)
+            if (length != 0)
+                counts[length]++;
         Span<uint> next = stackalloc uint[16];
         uint code = 0;
-        for (var length = 1; length < 16; length++) { code = (code + (uint)counts[length - 1]) << 1; next[length] = code; }
-        var codes = new uint[512];
-        for (var symbol = 0; symbol < 512; symbol++) if (lengths[symbol] != 0) codes[symbol] = next[lengths[symbol]]++;
+        for (int length = 1; length < 16; length++)
+        {
+            code = (code + (uint)counts[length - 1]) << 1;
+            next[length] = code;
+        }
+        uint[] codes = new uint[512];
+        for (int symbol = 0; symbol < 512; symbol++)
+            if (lengths[symbol] != 0)
+                codes[symbol] = next[lengths[symbol]]++;
         return codes;
     }
 
@@ -174,46 +206,61 @@ internal static partial class SmbCompressionCodec
     /// </remarks>
     private static void DecompressHuffman(ReadOnlySpan<byte> input, Span<byte> output)
     {
-        var source = 0; var destination = 0;
-        var lengths = new byte[512]; var decoding = new ushort[32768];
+        int source = 0;
+        int destination = 0;
+        byte[] lengths = new byte[512];
+        ushort[] decoding = new ushort[32768];
         while (true)
         {
             if (input.Length - source < 256)
             {
                 // 按 MS-XCA 2.2.4，声明的输出已全部产生且剩余输入放不下新码表时，
                 // 允许最后保留不足一张码表的预读或结束符区域，无须误报为截断的新块。
-                if (destination == output.Length) return;
+                if (destination == output.Length)
+                    return;
                 throw Invalid("Truncated Huffman block header.");
             }
-            for (var i = 0; i < 256; i++) { lengths[2 * i] = (byte)(input[source + i] & 15); lengths[2 * i + 1] = (byte)(input[source + i] >> 4); }
+            for (int i = 0; i < 256; i++)
+            {
+                lengths[2 * i] = (byte)(input[source + i] & 15);
+                lengths[(2 * i) + 1] = (byte)(input[source + i] >> 4);
+            }
             source += 256;
-            var entry = 0;
-            for (var length = 1; length <= 15; length++)
-                for (var symbol = 0; symbol < 512; symbol++) if (lengths[symbol] == length)
-                {
-                    var count = 1 << (15 - length);
-                    if (entry > decoding.Length - count) throw Invalid("Oversubscribed Huffman alphabet.");
-                    decoding.AsSpan(entry, count).Fill((ushort)symbol); entry += count;
-                }
-            if (entry != decoding.Length) throw Invalid("Incomplete Huffman alphabet.");
-            var reader = new HuffmanReader(input, source);
-            var blockEnd = checked(destination + 65536);
+            int entry = 0;
+            for (int length = 1; length <= 15; length++)
+                for (int symbol = 0; symbol < 512; symbol++)
+                    if (lengths[symbol] == length)
+                    {
+                        int count = 1 << (15 - length);
+                        if (entry > decoding.Length - count)
+                            throw Invalid("Oversubscribed Huffman alphabet.");
+                        decoding.AsSpan(entry, count).Fill((ushort)symbol);
+                        entry += count;
+                    }
+            if (entry != decoding.Length)
+                throw Invalid("Incomplete Huffman alphabet.");
+            HuffmanReader reader = new(input, source);
+            int blockEnd = checked(destination + 65536);
             while (destination < blockEnd)
             {
-                var symbol = decoding[(int)(reader.NextBits >> 17)]; reader.Consume(lengths[symbol]);
+                ushort symbol = decoding[(int)(reader.NextBits >> 17)];
+                reader.Consume(lengths[symbol]);
                 if (destination == output.Length)
                 {
-                    if (symbol == 256 && reader.Position == input.Length) return;
+                    if (symbol == 256 && reader.Position == input.Length)
+                        return;
                     throw Invalid("Huffman data extends past its declared output.");
                 }
                 if (symbol < 256)
                 {
-                    Require(output.Length, destination, 1); output[destination++] = (byte)symbol;
+                    Require(output.Length, destination, 1);
+                    output[destination++] = (byte)symbol;
                 }
                 else
                 {
-                    var match = symbol - 256;
-                    var length = match & 15; var distanceBits = match >> 4;
+                    int match = symbol - 256;
+                    int length = match & 15;
+                    int distanceBits = match >> 4;
                     if (length == 15)
                     {
                         length = reader.ReadByte();
@@ -222,19 +269,23 @@ internal static partial class SmbCompressionCodec
                             length = reader.Read16();
                             if (length == 0)
                             {
-                                var extended = reader.Read32();
-                                if (extended > int.MaxValue - 3) throw Invalid("Oversized Huffman length.");
+                                uint extended = reader.Read32();
+                                if (extended > int.MaxValue - 3)
+                                    throw Invalid("Oversized Huffman length.");
                                 length = (int)extended;
                             }
-                            if (length < 15) throw Invalid("Invalid Huffman match extension.");
+                            if (length < 15)
+                                throw Invalid("Invalid Huffman match extension.");
                         }
-                        else length += 15;
+                        else
+                            length += 15;
                     }
-                    var distance = (1 << distanceBits) + (distanceBits == 0 ? 0 : (int)(reader.NextBits >> (32 - distanceBits)));
+                    int distance = (1 << distanceBits) + (distanceBits == 0 ? 0 : (int)(reader.NextBits >> (32 - distanceBits)));
                     reader.Consume(distanceBits);
                     CopyMatch(output, ref destination, distance, checked(length + 3));
                 }
-                if (destination == output.Length && reader.Position == input.Length) return;
+                if (destination == output.Length && reader.Position == input.Length)
+                    return;
             }
             source = reader.Position;
         }
@@ -261,25 +312,47 @@ internal static partial class SmbCompressionCodec
         /// <param name="value">右对齐的有效位。</param>
         internal void WriteBits(int count, uint value)
         {
-            if (freeBits >= count) { freeBits -= count; nextWord = (nextWord << count) | value; }
+            if (freeBits >= count)
+            {
+                freeBits -= count;
+                nextWord = (nextWord << count) | value;
+            }
             else
             {
                 nextWord = (nextWord << freeBits) | (value >> (count - freeBits));
                 freeBits -= count;
                 BinaryPrimitives.WriteUInt16LittleEndian(Data.AsSpan(position1), (ushort)nextWord);
-                position1 = position2; position2 = position; position += 2;
-                Require(Data.Length, position, 0); freeBits += 16; nextWord = value;
+                position1 = position2;
+                position2 = position;
+                position += 2;
+                Require(Data.Length, position, 0);
+                freeBits += 16;
+                nextWord = value;
             }
         }
         /// <summary>在预留位字之后追加一个长匹配的额外长度字节。</summary>
         /// <param name="value">长度扩展字节。</param>
-        internal void WriteByte(byte value) { Require(Data.Length, position, 1); Data[position++] = value; }
+        internal void WriteByte(byte value)
+        {
+            Require(Data.Length, position, 1);
+            Data[position++] = value;
+        }
         /// <summary>在原始数据区追加一个小端 16 位长度扩展。</summary>
         /// <param name="value">长度扩展值；零表示还有 32 位扩展。</param>
-        internal void Write16(ushort value) { Require(Data.Length, position, 2); BinaryPrimitives.WriteUInt16LittleEndian(Data.AsSpan(position), value); position += 2; }
+        internal void Write16(ushort value)
+        {
+            Require(Data.Length, position, 2);
+            BinaryPrimitives.WriteUInt16LittleEndian(Data.AsSpan(position), value);
+            position += 2;
+        }
         /// <summary>在原始数据区追加一个小端 32 位超长匹配长度。</summary>
         /// <param name="value">不截断的长度值。</param>
-        internal void Write32(uint value) { Require(Data.Length, position, 4); BinaryPrimitives.WriteUInt32LittleEndian(Data.AsSpan(position), value); position += 4; }
+        internal void Write32(uint value)
+        {
+            Require(Data.Length, position, 4);
+            BinaryPrimitives.WriteUInt32LittleEndian(Data.AsSpan(position), value);
+            position += 4;
+        }
         /// <summary>左对齐最后的有效位，清零第二个预留字，并截取实际编码长度。</summary>
         /// <returns>不共享可写工作缓冲的独立编码块。</returns>
         internal byte[] Finish()
@@ -298,9 +371,15 @@ internal static partial class SmbCompressionCodec
         /// <summary>包含当前块及后续块的有界输入视图。</summary>
         private readonly ReadOnlySpan<byte> input;
         /// <summary>下一批最高位有效的码字和距离位。</summary>
-        internal uint NextBits { get; private set; }
+        internal uint NextBits
+        {
+            get; private set;
+        }
         /// <summary>已经预读的位字之后的位置，也是额外原始长度字段的读取位置。</summary>
-        internal int Position { get; private set; }
+        internal int Position
+        {
+            get; private set;
+        }
         /// <summary>除高 16 位消费窗口外已经缓冲的可用位数。</summary>
         private int extraBits;
         /// <summary>验证并预读两个 16 位字，建立最少 16 位的额外缓冲。</summary>
@@ -308,29 +387,48 @@ internal static partial class SmbCompressionCodec
         /// <param name="position">码长表之后第一个位字的位置。</param>
         internal HuffmanReader(ReadOnlySpan<byte> input, int position)
         {
-            this.input = input; Require(input.Length, position, 4);
+            this.input = input;
+            Require(input.Length, position, 4);
             NextBits = ((uint)SmbCompressionCodec.Read16(input, position) << 16) | SmbCompressionCodec.Read16(input, position + 2);
-            Position = position + 4; extraBits = 16;
+            Position = position + 4;
+            extraBits = 16;
         }
         /// <summary>消费高位并在必要时补读一个 16 位字；一次消费不超过 15 位。</summary>
         /// <param name="count">Huffman 码或距离的有效位数。</param>
         internal void Consume(int count)
         {
-            if (count == 0) return;
-            NextBits <<= count; extraBits -= count;
+            if (count == 0)
+                return;
+            NextBits <<= count;
+            extraBits -= count;
             if (extraBits < 0)
             {
-                NextBits |= (uint)Read16() << -extraBits; extraBits += 16;
+                NextBits |= (uint)Read16() << -extraBits;
+                extraBits += 16;
             }
         }
         /// <summary>有界读取一个交错存放的原始长度字节。</summary>
         /// <returns>字节值，并推进 Position。</returns>
-        internal byte ReadByte() { Require(input.Length, Position, 1); return input[Position++]; }
+        internal byte ReadByte()
+        {
+            Require(input.Length, Position, 1);
+            return input[Position++];
+        }
         /// <summary>有界读取原始 16 位长度或待补入的位字。</summary>
         /// <returns>小端字段值，并推进 Position。</returns>
-        internal ushort Read16() { var value = SmbCompressionCodec.Read16(input, Position); Position += 2; return value; }
+        internal ushort Read16()
+        {
+            ushort value = SmbCompressionCodec.Read16(input, Position);
+            Position += 2;
+            return value;
+        }
         /// <summary>有界读取 32 位长长度扩展。</summary>
         /// <returns>小端字段值，并推进 Position。</returns>
-        internal uint Read32() { var value = SmbCompressionCodec.Read32(input, Position); Position += 4; return value; }
+        internal uint Read32()
+        {
+            uint value = SmbCompressionCodec.Read32(input, Position);
+            Position += 4;
+            return value;
+        }
     }
 }

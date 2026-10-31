@@ -21,20 +21,21 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Runtime.CompilerServices;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>用户配额专用索引句柄的查询及修改，以及普通卷句柄可用的默认配额控制操作。</summary>
 public sealed partial class SmbFileHandle
 {
-    /// <summary>句柄是否由共享的固定配额控制流接口打开；不根据目录属性推断用途。</summary>
-    private bool quotaControlHandle;
     /// <summary>当前句柄是否是通过 OpenQuotaControlAsync 打开的专用用户配额控制句柄。</summary>
-    public bool IsQuotaControlHandle => quotaControlHandle;
+    public bool IsQuotaControlHandle
+    {
+        get; private set;
+    }
     /// <summary>专用配额句柄是否在打开时显式请求了写数据权限；服务器仍可能拒绝管理操作。</summary>
-    public bool IsQuotaControlWritable => quotaControlHandle && (OpenOptions.Access & SmbAccessMask.WriteData) != 0;
+    public bool IsQuotaControlWritable => IsQuotaControlHandle && (OpenOptions.Access & SmbAccessMask.WriteData) != 0;
     /// <summary>保护此打开句柄的服务器配额枚举游标；整个异步枚举期间持有该门。</summary>
     private readonly SemaphoreSlim quotaGate = new(1, 1);
     /// <summary>服务器明确表示配额枚举没有更多条目的 NTSTATUS 值。</summary>
@@ -52,8 +53,14 @@ public sealed partial class SmbFileHandle
         EnsureQuotaControlHandle();
         query = SnapshotQuotaQuery(query ?? new());
         await quotaGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { return await GetQuotaPageCoreAsync(query, cancellationToken).ConfigureAwait(false); }
-        finally { quotaGate.Release(); }
+        try
+        {
+            return await GetQuotaPageCoreAsync(query, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = quotaGate.Release();
+        }
     }
 
     /// <summary>
@@ -71,29 +78,40 @@ public sealed partial class SmbFileHandle
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         EnsureQuotaControlHandle();
-        if (maximumEntries < 1) throw new ArgumentOutOfRangeException(nameof(maximumEntries));
-        var query = SnapshotQuotaQuery(new() { MaximumOutput = maximumOutput, StartAfter = startAfter });
+        if (maximumEntries < 1)
+            throw new ArgumentOutOfRangeException(nameof(maximumEntries));
+        SmbQuotaQuery query = SnapshotQuotaQuery(new()
+        {
+            MaximumOutput = maximumOutput,
+            StartAfter = startAfter
+        });
         await quotaGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var seen = new HashSet<SmbSecurityIdentifier>();
+            HashSet<SmbSecurityIdentifier> seen = new();
             while (true)
             {
-                var page = await GetQuotaPageCoreAsync(query, cancellationToken).ConfigureAwait(false);
-                if (page.EndOfEnumeration) yield break;
-                foreach (var entry in page.Entries)
+                SmbQuotaPage page = await GetQuotaPageCoreAsync(query, cancellationToken).ConfigureAwait(false);
+                if (page.EndOfEnumeration)
+                    yield break;
+                foreach (SmbQuotaEntry entry in page.Entries)
                 {
-                    if (!seen.Add(entry.SecurityIdentifier))
-                        throw new SmbProtocolException("Quota enumeration did not make progress or repeated a SID.");
-                    if (seen.Count > maximumEntries)
-                        throw new SmbProtocolException("Quota enumeration exceeded the caller's entry limit.");
-                    yield return entry;
+                    yield return !seen.Add(entry.SecurityIdentifier)
+                        ? throw new SmbProtocolException("Quota enumeration did not make progress or repeated a SID.")
+                        : seen.Count > maximumEntries ? throw new SmbProtocolException("Quota enumeration exceeded the caller's entry limit.") : entry;
                 }
                 // 起始 SID 只用于首个请求；继续发送同一 StartAfter 会反复定位，不能代替服务器游标续页。
-                query = query with { RestartScan = false, StartAfter = null };
+                query = query with
+                {
+                    RestartScan = false,
+                    StartAfter = null
+                };
             }
         }
-        finally { quotaGate.Release(); }
+        finally
+        {
+            _ = quotaGate.Release();
+        }
     }
 
     /// <summary>查询一个 SID 的配额，保留服务器为未知 SID 返回的全零记录。</summary>
@@ -105,7 +123,11 @@ public sealed partial class SmbFileHandle
     public async Task<SmbQuotaEntry?> GetQuotaAsync(SmbSecurityIdentifier sid, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sid);
-        var page = await GetQuotaPageAsync(new() { SecurityIdentifiers = [sid], ReturnSingle = true }, cancellationToken).ConfigureAwait(false);
+        SmbQuotaPage page = await GetQuotaPageAsync(new()
+        {
+            SecurityIdentifiers = [sid],
+            ReturnSingle = true
+        }, cancellationToken).ConfigureAwait(false);
         return page.Entries.Count == 0 ? null : page.Entries[0];
     }
 
@@ -121,34 +143,40 @@ public sealed partial class SmbFileHandle
     {
         EnsureQuotaControlHandle();
         ArgumentNullException.ThrowIfNull(securityIdentifiers);
-        var selected = securityIdentifiers.ToArray();
-        if (selected.Length == 0) return Array.Empty<SmbQuotaEntry>();
+        SmbSecurityIdentifier[] selected = securityIdentifiers.ToArray();
+        if (selected.Length == 0)
+            return Array.Empty<SmbQuotaEntry>();
         if (selected.Any(sid => sid is null) || selected.Distinct().Count() != selected.Length)
             throw new ArgumentException("Quota selections require distinct non-null SIDs.", nameof(securityIdentifiers));
-        _ = SnapshotQuotaQuery(new() { MaximumOutput = maximumOutput });
+        _ = SnapshotQuotaQuery(new()
+        {
+            MaximumOutput = maximumOutput
+        });
         await quotaGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             // SID 列表查询不依赖枚举游标。每次只发送尚未返回的选择，避免小输出缓冲反复返回第一页。
-            var results = new Dictionary<SmbSecurityIdentifier, SmbQuotaEntry>();
-            var remaining = selected.ToList();
+            Dictionary<SmbSecurityIdentifier, SmbQuotaEntry> results = new();
+            List<SmbSecurityIdentifier> remaining = selected.ToList();
             while (remaining.Count != 0)
             {
-                var batch = new List<SmbSecurityIdentifier>();
+                List<SmbSecurityIdentifier> batch = new();
                 var size = 16;
-                foreach (var sid in remaining)
+                foreach (SmbSecurityIdentifier? sid in remaining)
                 {
-                    if (size + 8 + sid.BinaryLength > TransactionSize) break;
-                    batch.Add(sid); size += 8 + sid.BinaryLength;
+                    if (size + 8 + sid.BinaryLength > TransactionSize)
+                        break;
+                    batch.Add(sid);
+                    size += 8 + sid.BinaryLength;
                 }
-                var page = await GetQuotaPageCoreAsync(new()
+                SmbQuotaPage page = await GetQuotaPageCoreAsync(new()
                 {
                     MaximumOutput = maximumOutput,
                     SecurityIdentifiers = batch
                 }, cancellationToken).ConfigureAwait(false);
                 if (page.EndOfEnumeration || page.Entries.Count == 0)
                     throw new SmbProtocolException("The server did not return quota data for an explicit SID selection.");
-                foreach (var entry in page.Entries)
+                foreach (SmbQuotaEntry entry in page.Entries)
                 {
                     if (!remaining.Remove(entry.SecurityIdentifier) || !results.TryAdd(entry.SecurityIdentifier, entry))
                         throw new SmbProtocolException("The server returned an unexpected quota SID.");
@@ -156,7 +184,10 @@ public sealed partial class SmbFileHandle
             }
             return Array.AsReadOnly(selected.Select(sid => results[sid]).ToArray());
         }
-        finally { quotaGate.Release(); }
+        finally
+        {
+            _ = quotaGate.Release();
+        }
     }
 
     /// <summary>在一个 SET_INFO 请求中设置明确的用户配额值，需要服务器授予配额管理权限。</summary>
@@ -171,8 +202,14 @@ public sealed partial class SmbFileHandle
         EnsureQuotaControlHandle(writable: true);
         var data = SmbQuotaCodec.EncodeChanges(changes, TransactionSize);
         await quotaGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { await SetInfoAsync(SmbInfoType.Quota, 0, data, cancellationToken: cancellationToken).ConfigureAwait(false); }
-        finally { quotaGate.Release(); }
+        try
+        {
+            await SetInfoAsync(SmbInfoType.Quota, 0, data, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _ = quotaGate.Release();
+        }
     }
 
     /// <summary>
@@ -197,15 +234,22 @@ public sealed partial class SmbFileHandle
         await quotaGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var page = await GetQuotaPageCoreAsync(new() { SecurityIdentifiers = [sid], ReturnSingle = true }, cancellationToken).ConfigureAwait(false);
+            SmbQuotaPage page = await GetQuotaPageCoreAsync(new()
+            {
+                SecurityIdentifiers = [sid],
+                ReturnSingle = true
+            }, cancellationToken).ConfigureAwait(false);
             // 协议没有“保持不变”的写入哨兵；尤其 -2 表示删除，不能用它代替 null。
-            var current = page.Entries.FirstOrDefault();
-            var change = new SmbQuotaChange(sid, warningThreshold ?? current?.WarningThreshold ?? SmbQuotaValues.Unlimited,
+            SmbQuotaEntry? current = page.Entries.FirstOrDefault();
+            SmbQuotaChange change = new(sid, warningThreshold ?? current?.WarningThreshold ?? SmbQuotaValues.Unlimited,
                 limit ?? current?.Limit ?? SmbQuotaValues.Unlimited);
             var data = SmbQuotaCodec.EncodeChanges([change], TransactionSize);
             await SetInfoAsync(SmbInfoType.Quota, 0, data, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
-        finally { quotaGate.Release(); }
+        finally
+        {
+            _ = quotaGate.Release();
+        }
     }
 
     /// <summary>使用 QuotaLimit=-2 显式删除用户配额项，不等同于将上限改为无限制。</summary>
@@ -214,7 +258,9 @@ public sealed partial class SmbFileHandle
     /// <returns>服务器确认删除配额设置的任务。</returns>
     /// <exception cref="SmbException">服务器拒绝配额管理操作。</exception>
     public Task DeleteQuotaAsync(SmbSecurityIdentifier sid, CancellationToken cancellationToken = default)
-        => SetQuotasAsync([SmbQuotaChange.Delete(sid)], cancellationToken);
+    {
+        return SetQuotasAsync([SmbQuotaChange.Delete(sid)], cancellationToken);
+    }
 
     /// <summary>查询当前句柄所在卷的默认用户配额、日志配置和配额执行状态。</summary>
     /// <param name="cancellationToken">取消信息查询的令牌。</param>
@@ -252,7 +298,10 @@ public sealed partial class SmbFileHandle
     {
         if (query.MaximumOutput < 48 || query.MaximumOutput > TransactionSize)
             throw new ArgumentOutOfRangeException(nameof(query), "Quota output must fit the negotiated transaction and contain an entry.");
-        var result = query with { SecurityIdentifiers = query.SecurityIdentifiers?.ToArray() };
+        SmbQuotaQuery result = query with
+        {
+            SecurityIdentifiers = query.SecurityIdentifiers?.ToArray()
+        };
         _ = SmbQuotaCodec.BuildQuery(result, TransactionSize);
         return result;
     }
@@ -268,11 +317,14 @@ public sealed partial class SmbFileHandle
         EnsureQuotaControlHandle();
         var input = SmbQuotaCodec.BuildQuery(query, TransactionSize);
         var body = new byte[40 + input.Length];
-        Wire.Put16(body, 0, 41); body[2] = (byte)SmbInfoType.Quota;
+        Wire.Put16(body, 0, 41);
+        body[2] = (byte)SmbInfoType.Quota;
         Wire.Put32(body, 4, (uint)query.MaximumOutput);
-        Wire.Put16(body, 8, 104); Wire.Put32(body, 12, (uint)input.Length);
-        Id.Write(body, 24); input.CopyTo(body, 40);
-        var response = await share.SendAsync(Command.QueryInfo, body, cancellationToken, query.MaximumOutput).ConfigureAwait(false);
+        Wire.Put16(body, 8, 104);
+        Wire.Put32(body, 12, (uint)input.Length);
+        Id.Write(body, 24);
+        input.CopyTo(body, 40);
+        Response response = await Share.SendAsync(Command.QueryInfo, body, cancellationToken, query.MaximumOutput).ConfigureAwait(false);
         // NO_MORE_ENTRIES/NO_SUCH_FILE 是明确的结束信号；SUCCESS 下空输出并不等价，应作为协议错误。
         response.EnsureSuccess(QuotaNoMoreEntries, SmbStatus.NoSuchFile, SmbStatus.BufferOverflow);
         if (response.Status is QuotaNoMoreEntries or SmbStatus.NoSuchFile)
@@ -282,16 +334,19 @@ public sealed partial class SmbFileHandle
         if (length == 0 || length > query.MaximumOutput)
             throw new SmbProtocolException("The quota response was empty or exceeded the requested size.");
         var data = Wire.Buffer(response.Packet, Wire.U16(response.Packet, 66), length, 72);
-        var entries = SmbQuotaCodec.ParseEntries(data);
-        if (entries.Count == 0 || (query.ReturnSingle && entries.Count > 1))
-            throw new SmbProtocolException("The server returned an invalid number of quota entries.");
-        if (query.SecurityIdentifiers is { } selection && entries.Any(entry => !selection.Contains(entry.SecurityIdentifier)))
-            throw new SmbProtocolException("The server returned a quota SID outside the selection.");
-        return new(entries, false, response.Status == SmbStatus.BufferOverflow);
+        IReadOnlyList<SmbQuotaEntry> entries = SmbQuotaCodec.ParseEntries(data);
+        return entries.Count == 0 || (query.ReturnSingle && entries.Count > 1)
+            ? throw new SmbProtocolException("The server returned an invalid number of quota entries.")
+            : query.SecurityIdentifiers is { } selection && entries.Any(entry => !selection.Contains(entry.SecurityIdentifier))
+            ? throw new SmbProtocolException("The server returned a quota SID outside the selection.")
+            : new(entries, false, response.Status == SmbStatus.BufferOverflow);
     }
 
     /// <summary>在统一 CREATE 流程尚未向调用方发布句柄时，将其标记为保留配额索引用途。</summary>
-    internal void InitializeQuotaControlHandle() => quotaControlHandle = true;
+    internal void InitializeQuotaControlHandle()
+    {
+        IsQuotaControlHandle = true;
+    }
 
     /// <summary>在任何用户配额网络请求之前校验句柄用途以及显式写入授权请求。</summary>
     /// <param name="writable">是否要求调用者在打开专用句柄时选择可写模式。</param>
@@ -299,7 +354,7 @@ public sealed partial class SmbFileHandle
     private void EnsureQuotaControlHandle(bool writable = false)
     {
         ThrowIfClosed();
-        if (!quotaControlHandle)
+        if (!IsQuotaControlHandle)
             throw new InvalidOperationException("Open the reserved quota control stream with SmbShare.OpenQuotaControlAsync before querying user quotas.");
         if (writable && !IsQuotaControlWritable)
             throw new InvalidOperationException("Quota changes require a quota control handle opened with writable=true.");

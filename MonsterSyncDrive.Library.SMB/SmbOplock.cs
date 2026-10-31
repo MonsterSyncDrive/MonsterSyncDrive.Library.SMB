@@ -21,9 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-using MonsterSyncDrive.SMB.Protocol;
+using MonsterSyncDrive.Library.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>传统 SMB 机会锁；租约缓存属于另一套独立的协议功能。</summary>
 public enum SmbOplockLevel : byte
@@ -48,15 +48,30 @@ public sealed class SmbOplockBreak
     private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>正在撤销已授予缓存权限的文件句柄。</summary>
-    public SmbFileHandle File { get; }
+    public SmbFileHandle File
+    {
+        get;
+    }
     /// <summary>开始处理本条通知之前的已授予缓存级别。</summary>
-    public SmbOplockLevel PreviousLevel { get; }
+    public SmbOplockLevel PreviousLevel
+    {
+        get;
+    }
     /// <summary>服务器当前允许客户端保留的最高缓存级别。</summary>
-    public SmbOplockLevel RequestedLevel { get; }
+    public SmbOplockLevel RequestedLevel
+    {
+        get;
+    }
     /// <summary>该降级是否需要发送 SMB2 OPLOCK_BREAK 确认。</summary>
-    public bool RequiresAcknowledgement { get; }
+    public bool RequiresAcknowledgement
+    {
+        get;
+    }
     /// <summary>向应用程序交付降级通知时记录的本地 UTC 时间。</summary>
-    public DateTimeOffset ReceivedAt { get; }
+    public DateTimeOffset ReceivedAt
+    {
+        get;
+    }
     /// <summary>处理程序与必要的服务器确认均完成后结束的任务。</summary>
     public Task Completion => completion.Task;
 
@@ -79,13 +94,24 @@ public sealed class SmbOplockBreak
     }
 
     /// <summary>将缓存失效处理及必要的服务器确认标记为已完成。</summary>
-    internal void Complete() => completion.TrySetResult();
+    internal void Complete()
+    {
+        _ = completion.TrySetResult();
+    }
+
     /// <summary>向通知观察者发布缓存处理程序或协议处理的错误。</summary>
     /// <param name="error">导致无法安全完成处理的原始错误。</param>
-    internal void Fail(Exception error) => completion.TrySetException(error);
+    internal void Fail(Exception error)
+    {
+        _ = completion.TrySetException(error);
+    }
+
     /// <summary>在处理期间文件句柄被关闭时取消该通知。</summary>
     /// <param name="cancellationToken">标识此次取消的句柄生命周期令牌。</param>
-    internal void Cancel(CancellationToken cancellationToken) => completion.TrySetCanceled(cancellationToken);
+    internal void Cancel(CancellationToken cancellationToken)
+    {
+        _ = completion.TrySetCanceled(cancellationToken);
+    }
 }
 
 /// <summary>编码传统机会锁消息，并按边界约束校验其线上结构。</summary>
@@ -96,19 +122,24 @@ internal static class SmbOplockProtocol
     /// <param name="granted">服务器返回或应用程序选择的级别。</param>
     /// <returns>级别已知且缓存权限不高于允许值时返回 true。</returns>
     internal static bool CanGrant(SmbOplockLevel requested, SmbOplockLevel granted)
-        => Enum.IsDefined(requested) && Enum.IsDefined(granted) && Rank(granted) <= Rank(requested);
+    {
+        return Enum.IsDefined(requested) && Enum.IsDefined(granted) && Rank(granted) <= Rank(requested);
+    }
 
     /// <summary>将不连续的协议字节值映射为可比较的缓存权限强度。</summary>
     /// <param name="level">传统机会锁级别。</param>
     /// <returns>取值为零到三的相对缓存权限强度。</returns>
-    private static int Rank(SmbOplockLevel level) => level switch
+    private static int Rank(SmbOplockLevel level)
     {
-        SmbOplockLevel.None => 0,
-        SmbOplockLevel.LevelII => 1,
-        SmbOplockLevel.Exclusive => 2,
-        SmbOplockLevel.Batch => 3,
-        _ => throw new SmbProtocolException("An unsupported oplock level was received.")
-    };
+        return level switch
+        {
+            SmbOplockLevel.None => 0,
+            SmbOplockLevel.LevelII => 1,
+            SmbOplockLevel.Exclusive => 2,
+            SmbOplockLevel.Batch => 3,
+            _ => throw new SmbProtocolException("An unsupported oplock level was received.")
+        };
+    }
 
     /// <summary>在传输层完成身份与完整性验证后读取完整的传统机会锁主动通知。</summary>
     /// <param name="packet">解密后的 SMB2 消息头及长度恰为 24 字节的通知正文。</param>
@@ -128,10 +159,10 @@ internal static class SmbOplockProtocol
             Wire.U32(packet, 8) != 0 || (Wire.U32(packet, 16) & Wire.AsyncCommand) != 0)
             throw new SmbProtocolException("Invalid unsolicited SMB oplock break header.");
         Wire.Structure(packet, 24, 24);
-        var level = (SmbOplockLevel)packet[66];
-        if (level is not (SmbOplockLevel.None or SmbOplockLevel.LevelII or SmbOplockLevel.Exclusive))
-            throw new SmbProtocolException("Invalid oplock break downgrade level.");
-        return (SmbFileId.Read(packet, 72), level);
+        SmbOplockLevel level = (SmbOplockLevel)packet[66];
+        return level is not (SmbOplockLevel.None or SmbOplockLevel.LevelII or SmbOplockLevel.Exclusive)
+            ? throw new SmbProtocolException("Invalid oplock break downgrade level.")
+            : ((SmbFileId Id, SmbOplockLevel Level))(SmbFileId.Read(packet, 72), level);
     }
 
     /// <summary>识别 MS-SMB2 第 3.2.5.19.1 节规定的状态转换。</summary>
@@ -139,13 +170,15 @@ internal static class SmbOplockProtocol
     /// <param name="requested">撤销通知中的级别。</param>
     /// <returns>仅有效降级返回 true；重复通知及权限升级请求被忽略。</returns>
     internal static bool IsTransition(SmbOplockLevel previous, SmbOplockLevel requested)
-        => previous switch
+    {
+        return previous switch
         {
             SmbOplockLevel.LevelII => requested == SmbOplockLevel.None,
             SmbOplockLevel.Exclusive => requested is SmbOplockLevel.None or SmbOplockLevel.LevelII,
             SmbOplockLevel.Batch => requested is SmbOplockLevel.None or SmbOplockLevel.LevelII or SmbOplockLevel.Exclusive,
             _ => false
         };
+    }
 
     /// <summary>构造固定为 24 字节、保留字段清零的机会锁确认正文。</summary>
     /// <param name="id">受影响的远程打开句柄。</param>
@@ -156,7 +189,7 @@ internal static class SmbOplockProtocol
     {
         if (level is not (SmbOplockLevel.None or SmbOplockLevel.LevelII or SmbOplockLevel.Exclusive))
             throw new ArgumentOutOfRangeException(nameof(level));
-        var body = new byte[24];
+        byte[] body = new byte[24];
         Wire.Put16(body, 0, 24);
         body[2] = (byte)level;
         id.Write(body, 8);

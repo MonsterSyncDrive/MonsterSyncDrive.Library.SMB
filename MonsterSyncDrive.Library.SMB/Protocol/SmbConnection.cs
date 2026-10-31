@@ -21,12 +21,12 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol.Compression;
+using MonsterSyncDrive.Library.SMB.Security;
+using MonsterSyncDrive.Library.SMB.Transport;
 using System.Collections.Concurrent;
-using MonsterSyncDrive.SMB.Security;
-using MonsterSyncDrive.SMB.Transport;
-using MonsterSyncDrive.SMB.Protocol.Compression;
 
-namespace MonsterSyncDrive.SMB.Protocol;
+namespace MonsterSyncDrive.Library.SMB.Protocol;
 
 
 /// <summary>一个 SMB 传输通道的消息号、credit、收发和密码学状态；多个通道可共享一个逻辑会话。</summary>
@@ -108,18 +108,33 @@ internal sealed class SmbConnection : IAsyncDisposable
     internal SmbDialect Dialect { get; set; } = SmbDialect.Smb202;
 
     /// <summary>服务器是否支持多 credit 数据事务。</summary>
-    internal bool LargeMtu { get; set; }
+    internal bool LargeMtu
+    {
+        get; set;
+    }
 
     /// <summary>本通道所属的认证会话号；绑定通道共享此值。</summary>
-    internal ulong SessionId { get; set; }
+    internal ulong SessionId
+    {
+        get; set;
+    }
 
     /// <summary>普通请求是否使用消息签名，绑定 SESSION_SETUP 也受此保护。</summary>
-    internal bool SignRequests { get; private set; }
+    internal bool SignRequests
+    {
+        get; private set;
+    }
 
     /// <summary>普通会话消息是否使用 SMB 加密，与底层 QUIC TLS 分开。</summary>
-    internal bool EncryptSession { get; private set; }
+    internal bool EncryptSession
+    {
+        get; private set;
+    }
     /// <summary>经过认证回复确认的服务器会话强制加密位；与客户端 WhenAvailable 发送偏好分别保存。</summary>
-    internal bool ServerRequiresEncryption { get; set; }
+    internal bool ServerRequiresEncryption
+    {
+        get; set;
+    }
 
     /// <summary>通道尚未释放且未发布终止错误。</summary>
     internal bool IsAlive => Volatile.Read(ref failure) is null && Volatile.Read(ref disposed) == 0;
@@ -139,18 +154,30 @@ internal sealed class SmbConnection : IAsyncDisposable
         DirectConnection is not null && !SignRequests && !EncryptSession && Compression is null;
 
     /// <summary>经双方协商的压缩引擎；为空时收到压缩报文即拒绝。</summary>
-    internal SmbCompression? Compression { get; set; }
+    internal SmbCompression? Compression
+    {
+        get; set;
+    }
 
     /// <summary>逻辑客户端共享的并发请求预算；字节限速在文件句柄层执行。</summary>
-    internal SmbQosState QosState { get; set; }
+    internal SmbQosState QosState
+    {
+        get; set;
+    }
 
     /// <summary>已经通过通道校验的非请求响应通知；回调只能排队，不能阻塞接收。</summary>
-    internal Action<byte[], bool>? OplockBreakReceived { get; set; }
+    internal Action<byte[], bool>? OplockBreakReceived
+    {
+        get; set;
+    }
 
     /// <summary>通道首次终止的通知，用于会话级存活判断和 oplock 失效。</summary>
     internal event Action<Exception>? Failed;
     /// <summary>读取逻辑会话共享的通道故障序号，在 SMB3 请求签名前写入 ChannelSequence。</summary>
-    internal Func<ushort>? ChannelSequenceProvider { get; set; }
+    internal Func<ushort>? ChannelSequenceProvider
+    {
+        get; set;
+    }
 
 
     /// <summary>接管消息传输并启动唯一接收循环。</summary>
@@ -170,10 +197,17 @@ internal sealed class SmbConnection : IAsyncDisposable
     /// <param name="cancellationToken">连接及传输握手取消令牌。</param>
     internal static async Task<SmbConnection> ConnectAsync(SmbClientOptions options, CancellationToken cancellationToken)
     {
-        var transport = await SmbTransportFactory.ConnectAsync(options.Host, options.Port, options.Transport,
+        ISmbMessageTransport transport = await SmbTransportFactory.ConnectAsync(options.Host, options.Port, options.Transport,
             options.MaximumPacketSize, options.ConnectTimeout, cancellationToken).ConfigureAwait(false);
-        try { return new SmbConnection(transport, options); }
-        catch { await transport.DisposeAsync().ConfigureAwait(false); throw; }
+        try
+        {
+            return new SmbConnection(transport, options);
+        }
+        catch
+        {
+            await transport.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
 
@@ -205,11 +239,11 @@ internal sealed class SmbConnection : IAsyncDisposable
         ThrowIfFailed();
         if (body.Length > MaximumMessageSize - 116)
             throw new ArgumentOutOfRangeException(nameof(body), "The request exceeds MaximumPacketSize.");
-        var payloadSize = command == Command.Write && body.Length >= 8 ? (int)Wire.U32(body.Span, 4)
+        int payloadSize = command == Command.Write && body.Length >= 8 ? (int)Wire.U32(body.Span, 4)
             : command == Command.Ioctl && body.Length >= 32 ? (int)Wire.U32(body.Span, 28)
             : command == Command.SetInfo && body.Length >= 8 ? (int)Wire.U32(body.Span, 4)
             : 0;
-        var charge = LargeMtu && Dialect != SmbDialect.Smb202
+        int charge = LargeMtu && Dialect != SmbDialect.Smb202
             ? Math.Max(1, (Math.Max(payloadSize, maximumResponse) + 65535) / 65536) : 1;
         if (charge > ushort.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(maximumResponse));
@@ -217,20 +251,25 @@ internal sealed class SmbConnection : IAsyncDisposable
         if (!infiniteTimeout && options.OperationTimeout != Timeout.InfiniteTimeSpan)
             timeout.CancelAfter(options.OperationTimeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token, lifetime.Token);
-        using var scheduling = await AcquireSchedulingAsync(command, infiniteTimeout, linked.Token,
+        using IDisposable? scheduling = await AcquireSchedulingAsync(command, infiniteTimeout, linked.Token,
             cancellationToken, timeout.Token).ConfigureAwait(false);
-        try { await ReserveAsync(charge, linked.Token).ConfigureAwait(false); }
+        try
+        {
+            await ReserveAsync(charge, linked.Token).ConfigureAwait(false);
+        }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        { throw new TimeoutException("Waiting for SMB credits timed out."); }
-        var binding = command == Command.SessionSetup && body.Length >= 3 && (body.Span[2] & 1) != 0;
-        var protectedCommand = command is not (Command.Negotiate or Command.SessionSetup) || binding;
-        var encrypted = protectedCommand && (EncryptSession || encrypt);
-        var signed = protectedCommand && SignRequests && !encrypted;
+        {
+            throw new TimeoutException("Waiting for SMB credits timed out.");
+        }
+        bool binding = command == Command.SessionSetup && body.Length >= 3 && (body.Span[2] & 1) != 0;
+        bool protectedCommand = command is not (Command.Negotiate or Command.SessionSetup) || binding;
+        bool encrypted = protectedCommand && (EncryptSession || encrypt);
+        bool signed = protectedCommand && SignRequests && !encrypted;
         ulong id = 0;
         Pending? pending = null;
-        var written = false;
-        var frameComplete = false;
-        var assignedId = false;
+        bool written = false;
+        bool frameComplete = false;
+        bool assignedId = false;
         try
         {
             await writer.WaitAsync(linked.Token).ConfigureAwait(false);
@@ -238,7 +277,7 @@ internal sealed class SmbConnection : IAsyncDisposable
             {
                 linked.Token.ThrowIfCancellationRequested();
                 ThrowIfFailed();
-                var packet = Wire.Header(command, 0, SessionId, treeId,
+                byte[] packet = Wire.Header(command, 0, SessionId, treeId,
                     Dialect == SmbDialect.Smb202 ? (ushort)0 : (ushort)charge, 64, body.Length);
                 if (Dialect >= SmbDialect.Smb300 && SessionId != 0)
                     Wire.Put16(packet, 8, ChannelSequenceProvider?.Invoke() ?? 0);
@@ -260,21 +299,25 @@ internal sealed class SmbConnection : IAsyncDisposable
                 pending = new Pending(command, treeId, encrypted, signed, packet);
                 if (!outstanding.TryAdd(id, pending))
                     throw new SmbProtocolException("An SMB message ID was reused.");
-                var payload = command is not (Command.Negotiate or Command.SessionSetup) && Compression is { } compressor
+                byte[] payload = command is not (Command.Negotiate or Command.SessionSetup) && Compression is { } compressor
                     ? compressor.Compress(packet) : packet;
-                if (encrypted) payload = cryptography!.Encrypt(payload, SessionId);
+                if (encrypted)
+                    payload = cryptography!.Encrypt(payload, SessionId);
                 // 一旦开始写帧，取消或失败便不能把半帧留在仍可用的连接上；异常路径必须终止承载。
                 written = true;
                 await WriteFrameAsync(payload, linked.Token).ConfigureAwait(false);
                 frameComplete = true;
             }
-            finally { writer.Release(); }
-            using var timeoutRegistration = timeout.Token.UnsafeRegister(_ =>
+            finally
+            {
+                _ = writer.Release();
+            }
+            using CancellationTokenRegistration timeoutRegistration = timeout.Token.UnsafeRegister(_ =>
             {
                 if (!pending!.Completion.Task.IsCompleted)
                     Abort(new TimeoutException("An SMB operation timed out."));
             }, null);
-            using var cancellationRegistration = cancellationToken.UnsafeRegister(
+            using CancellationTokenRegistration cancellationRegistration = cancellationToken.UnsafeRegister(
                 _ => Cancel(id, pending!, cancellationToken), null);
             return await pending!.Completion.Task.ConfigureAwait(false);
         }
@@ -297,7 +340,7 @@ internal sealed class SmbConnection : IAsyncDisposable
                 if (assignedId)
                 {
                     if (pending is not null)
-                        outstanding.TryRemove(id, out _);
+                        _ = outstanding.TryRemove(id, out _);
                     Abort(new SmbProtocolException("An SMB message could not be sent."));
                 }
                 AddCredits(charge);
@@ -317,9 +360,14 @@ internal sealed class SmbConnection : IAsyncDisposable
     {
         if (infiniteTimeout || command is Command.Negotiate or Command.SessionSetup or Command.Cancel or Command.OplockBreak)
             return null;
-        try { return await QosState.AcquireAsync(linkedToken).ConfigureAwait(false); }
+        try
+        {
+            return await QosState.AcquireAsync(linkedToken).ConfigureAwait(false);
+        }
         catch (OperationCanceledException) when (timeoutToken.IsCancellationRequested && !userToken.IsCancellationRequested)
-        { throw new TimeoutException("Waiting for SMB request scheduling timed out."); }
+        {
+            throw new TimeoutException("Waiting for SMB request scheduling timed out.");
+        }
     }
 
     /// <summary>等待足够的 credit；在同一锁内扣减，唤醒后重新校验连接与取消状态。</summary>
@@ -353,15 +401,18 @@ internal sealed class SmbConnection : IAsyncDisposable
         lock (creditLock)
         {
             credits = checked(credits + count);
-            var signal = creditChanged;
+            TaskCompletionSource signal = creditChanged;
             creditChanged = NewSignal();
-            signal.TrySetResult();
+            _ = signal.TrySetResult();
         }
     }
 
 
     /// <summary>创建异步继续执行的通知任务，防止在 credit 锁中执行调用方代码。</summary>
-    private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static TaskCompletionSource NewSignal()
+    {
+        return new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
 
     /// <summary>校验最终受保护消息长度，再交给承载层原子帧发送。</summary>
@@ -382,19 +433,19 @@ internal sealed class SmbConnection : IAsyncDisposable
         {
             while (!lifetime.IsCancellationRequested)
             {
-                var packet = await transport.ReceiveAsync(lifetime.Token).ConfigureAwait(false);
+                byte[] packet = await transport.ReceiveAsync(lifetime.Token).ConfigureAwait(false);
                 if (packet.Length < 4 || packet.Length > MaximumMessageSize)
                     throw new SmbProtocolException("Invalid or oversized SMB message.");
-                var encrypted = packet[0] == 0xFD;
+                bool encrypted = packet[0] == 0xFD;
                 if (encrypted)
                     packet = (cryptography ?? throw new SmbProtocolException("Unexpected encrypted SMB message.")).Decrypt(packet, SessionId);
                 if (SmbCompression.IsCompressed(packet))
                     packet = (Compression ?? throw new SmbProtocolException("Unnegotiated SMB compression.")).Decompress(packet, MaximumMessageSize);
                 Wire.ValidateHeader(packet);
-                var id = Wire.U64(packet, 24);
+                ulong id = Wire.U64(packet, 24);
                 if (Wire.U16(packet, 12) == (ushort)Command.OplockBreak && id == ulong.MaxValue)
                 {
-                    var session = Wire.U64(packet, 40);
+                    ulong session = Wire.U64(packet, 40);
                     if (cryptography is null || (session != 0 && session != SessionId) || Wire.U32(packet, 36) != 0 ||
                         (Wire.U32(packet, 16) & Wire.AsyncCommand) != 0 ||
                         ((options.Encryption == SmbEncryptionPolicy.Required || ServerRequiresEncryption) && !encrypted))
@@ -411,10 +462,10 @@ internal sealed class SmbConnection : IAsyncDisposable
                     OplockBreakReceived?.Invoke(packet, encrypted);
                     continue;
                 }
-                if (!outstanding.TryGetValue(id, out var pending))
+                if (!outstanding.TryGetValue(id, out Pending? pending))
                     throw new SmbProtocolException("The server returned an unknown SMB message ID.");
                 var status = (SmbStatus)Wire.U32(packet, 8);
-                var async = (Wire.U32(packet, 16) & Wire.AsyncCommand) != 0;
+                bool async = (Wire.U32(packet, 16) & Wire.AsyncCommand) != 0;
                 if (Wire.U16(packet, 12) != (ushort)pending.Command ||
                     (pending.Command is not (Command.SessionSetup or Command.Negotiate) && Wire.U64(packet, 40) != SessionId) ||
                     (!async && pending.Command is not (Command.TreeConnect or Command.SessionSetup or Command.Negotiate) && Wire.U32(packet, 36) != pending.TreeId))
@@ -441,12 +492,15 @@ internal sealed class SmbConnection : IAsyncDisposable
                     if (pending.AsyncId is { } expected && (!async || Wire.U64(packet, 32) != expected))
                         throw new SmbProtocolException("An SMB asynchronous response has an invalid ID.");
                 }
-                outstanding.TryRemove(id, out _);
+                _ = outstanding.TryRemove(id, out _);
                 AddCredits(Wire.U16(packet, 14));
-                pending.Completion.TrySetResult(new Response(packet, pending.Request));
+                _ = pending.Completion.TrySetResult(new Response(packet, pending.Request));
             }
         }
-        catch (Exception ex) { Abort(ex); }
+        catch (Exception ex)
+        {
+            Abort(ex);
+        }
     }
 
 
@@ -473,7 +527,7 @@ internal sealed class SmbConnection : IAsyncDisposable
             {
                 if (!outstanding.ContainsKey(id))
                     return;
-                var packet = Wire.Header(Command.Cancel, id, SessionId, pending.TreeId, 0, 0, 4);
+                byte[] packet = Wire.Header(Command.Cancel, id, SessionId, pending.TreeId, 0, 0, 4);
                 if (Dialect >= SmbDialect.Smb300 && SessionId != 0)
                     Wire.Put16(packet, 8, ChannelSequenceProvider?.Invoke() ?? 0);
                 Wire.Put16(packet, 64, 4);
@@ -489,14 +543,20 @@ internal sealed class SmbConnection : IAsyncDisposable
                     cryptography!.Sign(packet);
                 await WriteFrameAsync(pending.Encrypted ? cryptography!.Encrypt(packet, SessionId) : packet, lifetime.Token).ConfigureAwait(false);
             }
-            finally { writer.Release(); }
-            var grace = options.OperationTimeout == Timeout.InfiniteTimeSpan ? TimeSpan.FromSeconds(60) : options.OperationTimeout;
+            finally
+            {
+                _ = writer.Release();
+            }
+            TimeSpan grace = options.OperationTimeout == Timeout.InfiniteTimeSpan ? TimeSpan.FromSeconds(60) : options.OperationTimeout;
             await Task.Delay(grace, lifetime.Token).ConfigureAwait(false);
             if (outstanding.ContainsKey(id))
                 Abort(new TimeoutException("The server did not complete a cancelled SMB operation."));
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { Abort(ex); }
+        catch (Exception ex)
+        {
+            Abort(ex);
+        }
     }
 
 
@@ -508,11 +568,18 @@ internal sealed class SmbConnection : IAsyncDisposable
             return;
         lifetime.Cancel();
         transport.Abort();
-        foreach (var entry in outstanding)
-            if (outstanding.TryRemove(entry.Key, out var pending))
-                pending.Completion.TrySetException(exception);
-        lock (creditLock) { creditChanged.TrySetResult(); }
-        try { Failed?.Invoke(exception); } catch { /* 订阅者异常不能阻止剩余传输资源清理。 */ }
+        foreach (KeyValuePair<ulong, Pending> entry in outstanding)
+            if (outstanding.TryRemove(entry.Key, out Pending? pending))
+                _ = pending.Completion.TrySetException(exception);
+        lock (creditLock)
+        {
+            _ = creditChanged.TrySetResult();
+        }
+        try
+        {
+            Failed?.Invoke(exception);
+        }
+        catch { /* 订阅者异常不能阻止剩余传输资源清理。 */ }
     }
 
 

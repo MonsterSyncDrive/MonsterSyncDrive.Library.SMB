@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>MS-SMB2 第 2.2.3.1.3 节分配的网络压缩算法标识。</summary>
 /// <remarks>这些值是线路标识，不是 Windows Compression API 或 NTFS 的算法编号。</remarks>
@@ -49,10 +49,16 @@ public enum SmbCompressionAlgorithm : ushort
 public sealed record SmbCompressionOptions
 {
     /// <summary>是否在 SMB 3.1.1 NEGOTIATE 中提供压缩能力；默认不提供。</summary>
-    public bool Enabled { get; init; }
+    public bool Enabled
+    {
+        get; init;
+    }
     /// <summary>按优先级排列的真实可用编解码器；连接前会复制为不可变列表。</summary>
     /// <remarks>不接受 None、未知值、重复值或空列表；PatternV1 要求允许链式压缩。</remarks>
-    public IReadOnlyList<SmbCompressionAlgorithm> Algorithms { get; init; } =
+    public IReadOnlyList<SmbCompressionAlgorithm> Algorithms
+    {
+        get; init;
+    } =
         [SmbCompressionAlgorithm.PatternV1, SmbCompressionAlgorithm.Lz77, SmbCompressionAlgorithm.Lz77Huffman,
          SmbCompressionAlgorithm.Lznt1, SmbCompressionAlgorithm.Lz4];
     /// <summary>是否提供链式片段支持；实际启用需要服务器也返回该能力。</summary>
@@ -69,14 +75,17 @@ public sealed record SmbCompressionOptions
     internal SmbCompressionOptions Snapshot()
     {
         ArgumentNullException.ThrowIfNull(Algorithms);
-        var algorithms = Algorithms.ToArray();
+        SmbCompressionAlgorithm[] algorithms = Algorithms.ToArray();
         if (algorithms.Length is < 1 or > 5 || algorithms.Any(a => !Enum.IsDefined(a) || a == SmbCompressionAlgorithm.None) ||
             algorithms.Distinct().Count() != algorithms.Length)
             throw new ArgumentException("Compression offers must contain distinct, supported algorithms.", nameof(Algorithms));
-        if (!AllowChained && algorithms.All(a => a == SmbCompressionAlgorithm.PatternV1))
-            throw new ArgumentException("Pattern compression requires chained compression.", nameof(Algorithms));
-        if (MinimumMessageSize < 64 || MinimumMessageSize > 0xFFFFFF || MinimumSavingsBytes < 0 || MinimumSavingsBytes > 0xFFFFFF)
-            throw new ArgumentOutOfRangeException(nameof(MinimumMessageSize));
-        return this with { Algorithms = Array.AsReadOnly(algorithms) };
+        return !AllowChained && algorithms.All(a => a == SmbCompressionAlgorithm.PatternV1)
+            ? throw new ArgumentException("Pattern compression requires chained compression.", nameof(Algorithms))
+            : MinimumMessageSize < 64 || MinimumMessageSize > 0xFFFFFF || MinimumSavingsBytes < 0 || MinimumSavingsBytes > 0xFFFFFF
+            ? throw new ArgumentOutOfRangeException(nameof(MinimumMessageSize))
+            : (this with
+            {
+                Algorithms = Array.AsReadOnly(algorithms)
+            });
     }
 }

@@ -23,7 +23,7 @@
  */
 using System.Buffers.Binary;
 
-namespace MonsterSyncDrive.SMB.Protocol;
+namespace MonsterSyncDrive.Library.SMB.Protocol;
 
 /// <summary>从对端接收并校验的 MS-SMBD 1.0 协商限制。</summary>
 /// <param name="CreditsRequested">对端期望的 SEND 信用总数。</param>
@@ -53,20 +53,38 @@ internal static class SmbDirectWire
     /// <summary>通常采用的 8 字节对齐数据偏移，包含四个零填充字节。</summary>
     internal const int PayloadOffset = 24;
     /// <summary>读取小端无符号 16 位协议字段。</summary>
-    private static ushort U16(ReadOnlySpan<byte> b, int p) => BinaryPrimitives.ReadUInt16LittleEndian(b[p..]);
+    private static ushort U16(ReadOnlySpan<byte> b, int p)
+    {
+        return BinaryPrimitives.ReadUInt16LittleEndian(b[p..]);
+    }
+
     /// <summary>读取小端无符号 32 位协议字段。</summary>
-    private static uint U32(ReadOnlySpan<byte> b, int p) => BinaryPrimitives.ReadUInt32LittleEndian(b[p..]);
+    private static uint U32(ReadOnlySpan<byte> b, int p)
+    {
+        return BinaryPrimitives.ReadUInt32LittleEndian(b[p..]);
+    }
+
     /// <summary>写入小端无符号 16 位协议字段。</summary>
-    private static void W16(Span<byte> b, int p, ushort v) => BinaryPrimitives.WriteUInt16LittleEndian(b[p..], v);
+    private static void W16(Span<byte> b, int p, ushort v)
+    {
+        BinaryPrimitives.WriteUInt16LittleEndian(b[p..], v);
+    }
+
     /// <summary>写入小端无符号 32 位协议字段。</summary>
-    private static void W32(Span<byte> b, int p, uint v) => BinaryPrimitives.WriteUInt32LittleEndian(b[p..], v);
+    private static void W32(Span<byte> b, int p, uint v)
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(b[p..], v);
+    }
 
     /// <summary>编码初始的 20 字节 MS-SMBD 协商请求。</summary>
     internal static byte[] NegotiateRequest(SmbDirectOptions options)
     {
-        var packet = new byte[20];
-        W16(packet, 0, Version); W16(packet, 2, Version); W16(packet, 6, options.SendCreditTarget);
-        W32(packet, 8, (uint)options.PreferredSendSize); W32(packet, 12, (uint)options.MaximumReceiveSize);
+        byte[] packet = new byte[20];
+        W16(packet, 0, Version);
+        W16(packet, 2, Version);
+        W16(packet, 6, options.SendCreditTarget);
+        W32(packet, 8, (uint)options.PreferredSendSize);
+        W32(packet, 12, (uint)options.MaximumReceiveSize);
         W32(packet, 16, (uint)options.MaximumFragmentedReceiveSize);
         return packet;
     }
@@ -74,27 +92,33 @@ internal static class SmbDirectWire
     /// <summary>根据已提供的接收资源校验 32 字节协商响应。</summary>
     internal static SmbDirectNegotiation NegotiateResponse(ReadOnlySpan<byte> packet, SmbDirectOptions offered)
     {
-        if (packet.Length < 32) throw new SmbProtocolException("Truncated SMB Direct negotiation response.");
+        if (packet.Length < 32)
+            throw new SmbProtocolException("Truncated SMB Direct negotiation response.");
         if (U16(packet, 4) != Version || U16(packet, 0) > Version || U16(packet, 2) < Version ||
             U16(packet, 8) == 0 || U16(packet, 10) == 0 || U32(packet, 12) != 0 ||
             U32(packet, 24) < 128 || U32(packet, 28) < 131072 ||
             U32(packet, 20) > offered.MaximumReceiveSize)
             throw new SmbProtocolException("The peer rejected or returned invalid SMB Direct negotiation parameters.");
-        for (var i = 16; i < 32; i += 4)
-            if (U32(packet, i) > int.MaxValue) throw new SmbProtocolException("An SMB Direct limit exceeds supported bounds.");
+        for (int i = 16; i < 32; i += 4)
+            if (U32(packet, i) > int.MaxValue)
+                throw new SmbProtocolException("An SMB Direct limit exceeds supported bounds.");
         return new(U16(packet, 8), U16(packet, 10), (int)U32(packet, 16), (int)U32(packet, 20), (int)U32(packet, 24), (int)U32(packet, 28));
     }
 
     /// <summary>编码 DATA_TRANSFER 帧，不添加 TCP 或 NetBIOS 前缀。</summary>
     internal static byte[] Data(ReadOnlySpan<byte> payload, uint remaining, ushort requested, ushort granted, bool responseRequested)
     {
-        if (requested == 0) throw new ArgumentOutOfRangeException(nameof(requested));
-        var packet = new byte[(payload.IsEmpty ? DataHeaderLength : PayloadOffset) + payload.Length];
-        W16(packet, 0, requested); W16(packet, 2, granted); W16(packet, 4, responseRequested ? (ushort)1 : (ushort)0);
+        if (requested == 0)
+            throw new ArgumentOutOfRangeException(nameof(requested));
+        byte[] packet = new byte[(payload.IsEmpty ? DataHeaderLength : PayloadOffset) + payload.Length];
+        W16(packet, 0, requested);
+        W16(packet, 2, granted);
+        W16(packet, 4, responseRequested ? (ushort)1 : (ushort)0);
         W32(packet, 8, remaining);
         if (!payload.IsEmpty)
         {
-            W32(packet, 12, PayloadOffset); W32(packet, 16, (uint)payload.Length);
+            W32(packet, 12, PayloadOffset);
+            W32(packet, 16, (uint)payload.Length);
             payload.CopyTo(packet.AsSpan(PayloadOffset));
         }
         return packet;
@@ -105,13 +129,15 @@ internal static class SmbDirectWire
     {
         if (packet.Length < DataHeaderLength || packet.Length > maximumReceiveSize)
             throw new SmbProtocolException("Invalid SMB Direct data message length.");
-        var span = packet.Span;
-        var offset = U32(span, 12); var length = U32(span, 16); var remaining = U32(span, 8);
-        if (U16(span, 0) == 0 || (U16(span, 4) & ~1) != 0 || (offset & 7) != 0 ||
+        ReadOnlySpan<byte> span = packet.Span;
+        uint offset = U32(span, 12);
+        uint length = U32(span, 16);
+        uint remaining = U32(span, 8);
+        return U16(span, 0) == 0 || (U16(span, 4) & ~1) != 0 || (offset & 7) != 0 ||
             offset > packet.Length || length > packet.Length - offset ||
             (length == 0 && (offset != 0 || remaining != 0)) || (length != 0 && offset < PayloadOffset) ||
-            length > maximumFragmentedSize || remaining > maximumFragmentedSize - length)
-            throw new SmbProtocolException("Invalid SMB Direct data message fields.");
-        return new(U16(span, 0), U16(span, 2), U16(span, 4) == 1, remaining, packet.Slice((int)offset, (int)length));
+            length > maximumFragmentedSize || remaining > maximumFragmentedSize - length
+            ? throw new SmbProtocolException("Invalid SMB Direct data message fields.")
+            : new(U16(span, 0), U16(span, 2), U16(span, 4) == 1, remaining, packet.Slice((int)offset, (int)length));
     }
 }

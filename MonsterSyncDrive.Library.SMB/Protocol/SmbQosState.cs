@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB.Protocol;
+namespace MonsterSyncDrive.Library.SMB.Protocol;
 
 
 /// <summary>一个逻辑客户端的应用数据限速、加权并发调度及统计；所有绑定通道共享实例。</summary>
@@ -66,21 +66,34 @@ internal sealed class SmbQosState
 
 
     /// <summary>在文件写请求发送前等待上传预算，取消时释放限速门。</summary>
-    internal ValueTask LimitUploadAsync(int bytes, CancellationToken cancellationToken) => upload.WaitAsync(bytes, cancellationToken);
+    internal ValueTask LimitUploadAsync(int bytes, CancellationToken cancellationToken)
+    {
+        return upload.WaitAsync(bytes, cancellationToken);
+    }
 
     /// <summary>在响应已校验之后、文件数据交付之前等待下载预算。</summary>
-    internal ValueTask LimitDownloadAsync(int bytes, CancellationToken cancellationToken) => download.WaitAsync(bytes, cancellationToken);
+    internal ValueTask LimitDownloadAsync(int bytes, CancellationToken cancellationToken)
+    {
+        return download.WaitAsync(bytes, cancellationToken);
+    }
 
     /// <summary>仅累计服务端实际确认的写入数据，短写不按请求长度虚计。</summary>
-    internal void Uploaded(int bytes) => Interlocked.Add(ref uploaded, bytes);
+    internal void Uploaded(int bytes)
+    {
+        _ = Interlocked.Add(ref uploaded, bytes);
+    }
 
     /// <summary>累计实际交付的文件数据字节数，EOF 和头部不计。</summary>
-    internal void Downloaded(int bytes) => Interlocked.Add(ref downloaded, bytes);
+    internal void Downloaded(int bytes)
+    {
+        _ = Interlocked.Add(ref downloaded, bytes);
+    }
 
     /// <summary>在锁内获取一致的活动、排队数量，并以原子读取获取字节累计值。</summary>
     internal SmbQosStatistics Snapshot()
     {
-        lock (sync) return new(Interlocked.Read(ref uploaded), Interlocked.Read(ref downloaded), active, queued);
+        lock (sync)
+            return new(Interlocked.Read(ref uploaded), Interlocked.Read(ref downloaded), active, queued);
     }
 
 
@@ -88,7 +101,8 @@ internal sealed class SmbQosState
     internal ValueTask<IDisposable> AcquireAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        if (options.MaximumConcurrentRequests == 0) return ValueTask.FromResult<IDisposable>(NoLease.Instance);
+        if (options.MaximumConcurrentRequests == 0)
+            return ValueTask.FromResult<IDisposable>(NoLease.Instance);
         lock (sync)
         {
             if (active < options.MaximumConcurrentRequests && queued == 0)
@@ -98,8 +112,8 @@ internal sealed class SmbQosState
             }
             if (queued >= options.MaximumQueuedRequests)
                 throw new InvalidOperationException("The SMB QoS request queue is full.");
-            var priority = (int)SmbQosScope.PriorityOr(options.DefaultPriority);
-            var waiter = new Waiter(this, priority, token);
+            int priority = (int)SmbQosScope.PriorityOr(options.DefaultPriority);
+            Waiter waiter = new(this, priority, token);
             waiter.Node = queues[priority].AddLast(waiter);
             queued++;
             return AwaitAsync(waiter, token);
@@ -112,7 +126,7 @@ internal sealed class SmbQosState
     {
         using var registration = token.UnsafeRegister(static state =>
         {
-            var value = (Waiter)state!;
+            Waiter value = (Waiter)state!;
             value.Owner.Cancel(value);
         }, waiter);
         return await waiter.Completion.Task.ConfigureAwait(false);
@@ -124,10 +138,12 @@ internal sealed class SmbQosState
     {
         lock (sync)
         {
-            if (waiter.Node is null) return;
+            if (waiter.Node is null)
+                return;
             queues[waiter.Priority].Remove(waiter.Node);
-            waiter.Node = null; queued--;
-            waiter.Completion.TrySetCanceled(waiter.Token);
+            waiter.Node = null;
+            queued--;
+            _ = waiter.Completion.TrySetCanceled(waiter.Token);
         }
     }
 
@@ -140,13 +156,18 @@ internal sealed class SmbQosState
             active--;
             while (active < options.MaximumConcurrentRequests && queued != 0)
             {
-                for (var i = 0; i < Schedule.Length; i++)
+                for (int i = 0; i < Schedule.Length; i++)
                 {
-                    var index = Schedule[cursor]; cursor = (cursor + 1) % Schedule.Length;
-                    if (queues[index].First is not { } node) continue;
+                    int index = Schedule[cursor];
+                    cursor = (cursor + 1) % Schedule.Length;
+                    if (queues[index].First is not { } node)
+                        continue;
                     var waiter = node.Value;
-                    queues[index].Remove(node); waiter.Node = null; queued--; active++;
-                    waiter.Completion.TrySetResult(new Lease(this));
+                    queues[index].Remove(node);
+                    waiter.Node = null;
+                    queued--;
+                    active++;
+                    _ = waiter.Completion.TrySetResult(new Lease(this));
                     break;
                 }
             }
@@ -186,7 +207,10 @@ internal sealed class SmbQosState
         private SmbQosState? value = owner;
 
         /// <summary>只归还一次并发预算，允许异常路径重复释放。</summary>
-        public void Dispose() => Interlocked.Exchange(ref value, null)?.Release();
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref value, null)?.Release();
+        }
     }
 
     /// <summary>不启用并发限制时使用的无分配空租约。</summary>
@@ -197,7 +221,9 @@ internal sealed class SmbQosState
         internal static readonly NoLease Instance = new();
 
         /// <summary>空租约不修改调度状态。</summary>
-        public void Dispose() { }
+        public void Dispose()
+        {
+        }
     }
 
 
@@ -212,10 +238,10 @@ internal sealed class SmbQosState
         private readonly SemaphoreSlim gate = new(1, 1);
 
         /// <summary>突发预算上限，不超过一个速率周期的数据量。</summary>
-        private readonly double capacity = Math.Min(rate, (long)burstBytes);
+        private readonly double capacity = Math.Min(rate, burstBytes);
 
         /// <summary>当前剩余突发预算，扣除和补充均在方向门内进行。</summary>
-        private double tokens = Math.Min(rate, (long)burstBytes);
+        private double tokens = Math.Min(rate, burstBytes);
 
         /// <summary>上次结算的单调时间戳。</summary>
         private long last = time.GetTimestamp();
@@ -224,29 +250,39 @@ internal sealed class SmbQosState
         /// <summary>扣除突发额度，并按真实已等待时长补足剩余字节预算；长等待切片以保持可取消和计时器范围安全。</summary>
         internal async ValueTask WaitAsync(int count, CancellationToken token)
         {
-            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+            if (count < 0)
+                throw new ArgumentOutOfRangeException(nameof(count));
             token.ThrowIfCancellationRequested();
-            if (rate == 0 || count == 0) return;
+            if (rate == 0 || count == 0)
+                return;
             await gate.WaitAsync(token).ConfigureAwait(false);
             try
             {
-                var now = time.GetTimestamp();
-                var elapsed = Math.Max(0, time.GetElapsedTime(last, now).TotalSeconds);
-                tokens = Math.Min(capacity, tokens + elapsed * rate); last = now;
-                if (count <= tokens) { tokens -= count; return; }
-                var remaining = (count - tokens) / rate;
+                long now = time.GetTimestamp();
+                double elapsed = Math.Max(0, time.GetElapsedTime(last, now).TotalSeconds);
+                tokens = Math.Min(capacity, tokens + (elapsed * rate));
+                last = now;
+                if (count <= tokens)
+                {
+                    tokens -= count;
+                    return;
+                }
+                double remaining = (count - tokens) / rate;
                 tokens = 0;
                 // 长等待按上限切片：既保持调用方取消响应，也避免底层计时器可表示范围溢出。
                 while (remaining > 0)
                 {
-                    var delay = TimeSpan.FromSeconds(Math.Min(remaining, 30));
-                    var start = time.GetTimestamp();
+                    TimeSpan delay = TimeSpan.FromSeconds(Math.Min(remaining, 30));
+                    long start = time.GetTimestamp();
                     await Task.Delay(delay, time, token).ConfigureAwait(false);
                     remaining -= Math.Max(0, time.GetElapsedTime(start, time.GetTimestamp()).TotalSeconds);
                 }
                 last = time.GetTimestamp();
             }
-            finally { gate.Release(); }
+            finally
+            {
+                _ = gate.Release();
+            }
         }
     }
 }

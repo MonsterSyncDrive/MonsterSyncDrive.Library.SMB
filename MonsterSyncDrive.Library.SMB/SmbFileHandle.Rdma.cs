@@ -21,10 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Protocol;
 using System.Diagnostics.CodeAnalysis;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 /// <summary>文件句柄的 SMB3 RDMA 直接放置路径；安全保护或传输条件不满足时继续使用普通消息传输。</summary>
 public sealed partial class SmbFileHandle
@@ -38,12 +38,16 @@ public sealed partial class SmbFileHandle
     private bool TrySelectRdmaIo(int count, bool write, [NotNullWhen(true)] out SmbConnection? selected,
         [NotNullWhen(true)] out SmbDirectConnection? direct)
     {
-        selected = null; direct = null;
-        if (!share.IsDiskShare || !share.Client.TrySelectRdmaDirectPlacementConnection(share.EncryptionRequired, out var candidate)) return false;
-        var rdma = candidate.DirectConnection;
+        selected = null;
+        direct = null;
+        if (!Share.IsDiskShare || !Share.Client.TrySelectRdmaDirectPlacementConnection(Share.EncryptionRequired, out SmbConnection? candidate))
+            return false;
+        SmbDirectConnection? rdma = candidate.DirectConnection;
         if (rdma is null || !rdma.DirectPlacementEnabled || count <= rdma.DirectPlacementThreshold || count > rdma.MaximumReadWriteSize ||
-            (write ? !rdma.SupportsRemoteRead : !rdma.SupportsRemoteWrite)) return false;
-        selected = candidate; direct = rdma;
+            (write ? !rdma.SupportsRemoteRead : !rdma.SupportsRemoteWrite))
+            return false;
+        selected = candidate;
+        direct = rdma;
         return true;
     }
 
@@ -63,25 +67,31 @@ public sealed partial class SmbFileHandle
         SmbDirectConnection direct, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var registration = await direct.RegisterBufferAsync(buffer, SmbRdmaMemoryAccess.RemoteWrite, cancellationToken).ConfigureAwait(false);
-        var requestStarted = false;
-        var count = 0;
+        SmbRdmaMemoryRegistration registration = await direct.RegisterBufferAsync(buffer, SmbRdmaMemoryAccess.RemoteWrite, cancellationToken).ConfigureAwait(false);
+        bool requestStarted = false;
+        int count = 0;
         try
         {
             // 异常处理先结束固定通道，最后再注销内存，不能让隐式释放先于硬件栅栏。
-            var descriptors = EncodeRdmaDescriptors(registration);
-            var body = new byte[48 + descriptors.Length];
-            Wire.Put16(body, 0, 49); Wire.Put32(body, 4, (uint)buffer.Length); Wire.PutI64(body, 8, offset); Id.Write(body, 16);
+            byte[] descriptors = EncodeRdmaDescriptors(registration);
+            byte[] body = new byte[48 + descriptors.Length];
+            Wire.Put16(body, 0, 49);
+            Wire.Put32(body, 4, (uint)buffer.Length);
+            Wire.PutI64(body, 8, offset);
+            Id.Write(body, 16);
             Wire.Put32(body, 36, 1); // SMB2_CHANNEL_RDMA_V1，不请求提供程序尚未承诺支持的远程失效。
-            Wire.Put32(body, 40, (uint)buffer.Length); Wire.Put16(body, 44, 112); Wire.Put16(body, 46, (ushort)descriptors.Length);
+            Wire.Put32(body, 40, (uint)buffer.Length);
+            Wire.Put16(body, 44, 112);
+            Wire.Put16(body, 46, (ushort)descriptors.Length);
             descriptors.CopyTo(body, 48);
-            cancellationToken.ThrowIfCancellationRequested(); requestStarted = true;
-            var response = await connection.SendAsync(Command.Read, body, share.TreeId, cancellationToken, buffer.Length).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            requestStarted = true;
+            Response response = await connection.SendAsync(Command.Read, body, Share.TreeId, cancellationToken, buffer.Length).ConfigureAwait(false);
             response.EnsureSuccess(SmbStatus.EndOfFile, SmbStatus.BufferOverflow);
             if (response.Status != SmbStatus.EndOfFile)
             {
                 Wire.Structure(response.Packet, 17, 16);
-                var placed = Wire.U32(response.Packet, 72);
+                uint placed = Wire.U32(response.Packet, 72);
                 // V1 的实际数据已经由设备写入注册范围；不能把内联 DataLength 当成完成长度。
                 if (Wire.U32(response.Packet, 68) != 0 || placed > buffer.Length || (response.Packet[67] & 1) != 0)
                     throw new SmbProtocolException("Invalid untransformed RDMA READ completion.");
@@ -97,9 +107,12 @@ public sealed partial class SmbFileHandle
             }
             throw;
         }
-        finally { await DeregisterRdmaIoAsync(registration, connection, direct).ConfigureAwait(false); }
-        await share.Client.QosState.LimitDownloadAsync(count, cancellationToken).ConfigureAwait(false);
-        share.Client.QosState.Downloaded(count);
+        finally
+        {
+            await DeregisterRdmaIoAsync(registration, connection, direct).ConfigureAwait(false);
+        }
+        await Share.Client.QosState.LimitDownloadAsync(count, cancellationToken).ConfigureAwait(false);
+        Share.Client.QosState.Downloaded(count);
         return count;
     }
 
@@ -115,27 +128,35 @@ public sealed partial class SmbFileHandle
         SmbConnection connection, SmbDirectConnection direct, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var source = buffer.ToArray();
-        await share.Client.QosState.LimitUploadAsync(source.Length, cancellationToken).ConfigureAwait(false);
-        var registration = await direct.RegisterBufferAsync(source, SmbRdmaMemoryAccess.RemoteRead, cancellationToken).ConfigureAwait(false);
-        var requestStarted = false;
-        var count = 0;
+        byte[] source = buffer.ToArray();
+        await Share.Client.QosState.LimitUploadAsync(source.Length, cancellationToken).ConfigureAwait(false);
+        SmbRdmaMemoryRegistration registration = await direct.RegisterBufferAsync(source, SmbRdmaMemoryAccess.RemoteRead, cancellationToken).ConfigureAwait(false);
+        bool requestStarted = false;
+        int count = 0;
         try
         {
             // 异常处理先结束固定通道，最后再注销内存，不能让隐式释放先于硬件栅栏。
-            var descriptors = EncodeRdmaDescriptors(registration);
-            var body = new byte[48 + descriptors.Length];
-            Wire.Put16(body, 0, 49); Wire.PutI64(body, 8, offset); Id.Write(body, 16);
+            byte[] descriptors = EncodeRdmaDescriptors(registration);
+            byte[] body = new byte[48 + descriptors.Length];
+            Wire.Put16(body, 0, 49);
+            Wire.PutI64(body, 8, offset);
+            Id.Write(body, 16);
             // V1 写入的数据长度放在 RemainingBytes；Length 和 DataOffset 必须为零。
-            Wire.Put32(body, 32, 1); Wire.Put32(body, 36, (uint)source.Length);
-            Wire.Put16(body, 40, 112); Wire.Put16(body, 42, (ushort)descriptors.Length);
-            Wire.Put32(body, 44, writeThrough ? 1u : 0); descriptors.CopyTo(body, 48);
-            cancellationToken.ThrowIfCancellationRequested(); requestStarted = true;
+            Wire.Put32(body, 32, 1);
+            Wire.Put32(body, 36, (uint)source.Length);
+            Wire.Put16(body, 40, 112);
+            Wire.Put16(body, 42, (ushort)descriptors.Length);
+            Wire.Put32(body, 44, writeThrough ? 1u : 0);
+            descriptors.CopyTo(body, 48);
+            cancellationToken.ThrowIfCancellationRequested();
+            requestStarted = true;
             // 本次 WRITE 的内联 Length 为零，仍按逻辑数据长度保留 credit 预算。
-            var response = await connection.SendAsync(Command.Write, body, share.TreeId, cancellationToken, source.Length).ConfigureAwait(false);
-            response.EnsureSuccess(); Wire.Structure(response.Packet, 17, 16);
-            var written = Wire.U32(response.Packet, 68);
-            if (written == 0 || written > source.Length) throw new SmbProtocolException("Invalid RDMA WRITE completion count.");
+            Response response = await connection.SendAsync(Command.Write, body, Share.TreeId, cancellationToken, source.Length).ConfigureAwait(false);
+            response.EnsureSuccess();
+            Wire.Structure(response.Packet, 17, 16);
+            uint written = Wire.U32(response.Packet, 68);
+            if (written == 0 || written > source.Length)
+                throw new SmbProtocolException("Invalid RDMA WRITE completion count.");
             count = (int)written;
         }
         catch (Exception error) when (error is not SmbException)
@@ -147,8 +168,11 @@ public sealed partial class SmbFileHandle
             }
             throw;
         }
-        finally { await DeregisterRdmaIoAsync(registration, connection, direct).ConfigureAwait(false); }
-        share.Client.QosState.Uploaded(count);
+        finally
+        {
+            await DeregisterRdmaIoAsync(registration, connection, direct).ConfigureAwait(false);
+        }
+        Share.Client.QosState.Uploaded(count);
         return count;
     }
 
@@ -157,9 +181,10 @@ public sealed partial class SmbFileHandle
     /// <returns>直接附加在 SMB 请求 Buffer 字段的描述符字节。</returns>
     private static byte[] EncodeRdmaDescriptors(SmbRdmaMemoryRegistration registration)
     {
-        var bytes = SmbRdmaBufferDescriptor.Encode(registration.Descriptors);
-        if (bytes.Length > ushort.MaxValue) throw new SmbProtocolException("The RDMA descriptor array exceeds an SMB2 channel information field.");
-        return bytes;
+        byte[] bytes = SmbRdmaBufferDescriptor.Encode(registration.Descriptors);
+        return bytes.Length > ushort.MaxValue
+            ? throw new SmbProtocolException("The RDMA descriptor array exceeds an SMB2 channel information field.")
+            : bytes;
     }
 
     /// <summary>注销文件操作的注册内存；栅栏失败时关闭整个固定通道，避免继续使用不确定的注册状态。</summary>
@@ -168,7 +193,10 @@ public sealed partial class SmbFileHandle
     /// <param name="direct">需要结束设备访问的同一个 RDMA 连接。</param>
     private static async ValueTask DeregisterRdmaIoAsync(SmbRdmaMemoryRegistration registration, SmbConnection connection, SmbDirectConnection direct)
     {
-        try { await registration.DisposeAsync().ConfigureAwait(false); }
+        try
+        {
+            await registration.DisposeAsync().ConfigureAwait(false);
+        }
         catch (Exception error)
         {
             connection.Abort(error);

@@ -21,11 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+using MonsterSyncDrive.Library.SMB.Transport;
 using System.Net;
 using System.Threading.Channels;
-using MonsterSyncDrive.SMB.Protocol;
 
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB.Protocol;
 
 /// <summary>通过 MS-SMBD 接收并重组的上层消息。</summary>
 /// <param name="Data">一条重组消息的独立字节；仅独立失效事件允许为空。</param>
@@ -54,7 +54,11 @@ public sealed class SmbDirectConnection : IAsyncDisposable
     private readonly object stateGate = new();
     /// <summary>将应用背压队列限制为八条完整消息。</summary>
     private readonly Channel<SmbDirectMessage> messages = Channel.CreateBounded<SmbDirectMessage>(new BoundedChannelOptions(8)
-    { SingleReader = false, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait });
+    {
+        SingleReader = false,
+        SingleWriter = true,
+        FullMode = BoundedChannelFullMode.Wait
+    });
     /// <summary>授予信用或投递接收改变可用资源时，唤醒延迟发送。</summary>
     private TaskCompletionSource creditChanged = Signal();
     /// <summary>运行唯一的原生接收及完成结果消费者。</summary>
@@ -93,15 +97,30 @@ public sealed class SmbDirectConnection : IAsyncDisposable
     /// <summary>原生提供程序实际选定的远程 RDMA 端点。</summary>
     public EndPoint? RemoteEndPoint => endpoint.RemoteEndPoint;
     /// <summary>DATA_TRANSFER 帧的最大字节数，包含 20 或 24 字节的消息头。</summary>
-    public int MaximumSendSize { get; }
+    public int MaximumSendSize
+    {
+        get;
+    }
     /// <summary>单个传入 DATA_TRANSFER 帧允许的最大字节数。</summary>
-    public int MaximumReceiveSize { get; }
+    public int MaximumReceiveSize
+    {
+        get;
+    }
     /// <summary>与对端协商的完整上层消息最大长度。</summary>
-    public int MaximumFragmentedSendSize { get; }
+    public int MaximumFragmentedSendSize
+    {
+        get;
+    }
     /// <summary>本地公布的上层消息重组最大长度。</summary>
-    public int MaximumFragmentedReceiveSize { get; }
+    public int MaximumFragmentedReceiveSize
+    {
+        get;
+    }
     /// <summary>协商得到的逻辑 RDMA 读写最大长度；零表示禁用直接放置。</summary>
-    public int MaximumReadWriteSize { get; }
+    public int MaximumReadWriteSize
+    {
+        get;
+    }
     /// <summary>是否允许自动直接放置；还必须由 SMB 会话和文件操作检查签名、加密与长度边界。</summary>
     public bool DirectPlacementEnabled => options.EnableDirectPlacement && MaximumReadWriteSize > 0;
     /// <summary>只有大于该字节数的数据块才进入自动内存注册路径。</summary>
@@ -116,8 +135,11 @@ public sealed class SmbDirectConnection : IAsyncDisposable
     /// <summary>只有原生接收和协商都成功后才创建已建立连接状态。</summary>
     private SmbDirectConnection(ISmbRdmaEndpoint endpoint, SmbDirectOptions options, SmbDirectNegotiation peer, int posted)
     {
-        this.endpoint = endpoint; this.options = options; postedReceives = posted;
-        sendCredits = peer.CreditsGranted; peerCreditTarget = peer.CreditsRequested;
+        this.endpoint = endpoint;
+        this.options = options;
+        postedReceives = posted;
+        sendCredits = peer.CreditsGranted;
+        peerCreditTarget = peer.CreditsRequested;
         MaximumSendSize = Math.Min(options.PreferredSendSize, Math.Min(peer.MaximumReceiveSize, endpoint.MaximumSendSize));
         MaximumReceiveSize = Math.Max(128, Math.Min(options.MaximumReceiveSize, peer.PreferredSendSize));
         MaximumFragmentedSendSize = peer.MaximumFragmentedSize;
@@ -136,13 +158,18 @@ public sealed class SmbDirectConnection : IAsyncDisposable
         ArgumentOutOfRangeException.ThrowIfGreaterThan(port, 65535);
         ArgumentNullException.ThrowIfNull(options);
         options = options.Validate();
-        if (maximumMessageSize < 131072) throw new ArgumentOutOfRangeException(nameof(maximumMessageSize), "MS-SMBD requires at least 128 KiB fragmented receive capacity.");
-        options = options with { MaximumFragmentedReceiveSize = Math.Min(options.MaximumFragmentedReceiveSize, maximumMessageSize) };
-        var provider = options.Provider ?? (SmbNetworkDirectProvider.IsSupported ? new SmbNetworkDirectProvider() : throw new PlatformNotSupportedException(
+        if (maximumMessageSize < 131072)
+            throw new ArgumentOutOfRangeException(nameof(maximumMessageSize), "MS-SMBD requires at least 128 KiB fragmented receive capacity.");
+        options = options with
+        {
+            MaximumFragmentedReceiveSize = Math.Min(options.MaximumFragmentedReceiveSize, maximumMessageSize)
+        };
+        ISmbRdmaProvider provider = options.Provider ?? (SmbNetworkDirectProvider.IsSupported ? new SmbNetworkDirectProvider() : throw new PlatformNotSupportedException(
             "The built-in SMB Direct provider requires 64-bit Windows. Configure a native ISmbRdmaProvider for this platform; TCP fallback is not performed."));
-        var endpoint = await provider.ConnectAsync(new(host, port, options.LocalEndPoint, options.PreferredSendSize,
+        ISmbRdmaEndpoint? endpoint = await provider.ConnectAsync(new(host, port, options.LocalEndPoint, options.PreferredSendSize,
             options.MaximumReceiveSize, options.MaximumReceiveCredits), cancellationToken).ConfigureAwait(false);
-        if (endpoint is null) throw new SmbProtocolException("The RDMA provider returned no endpoint.");
+        if (endpoint is null)
+            throw new SmbProtocolException("The RDMA provider returned no endpoint.");
         SmbDirectConnection? connection = null;
         try
         {
@@ -154,18 +181,21 @@ public sealed class SmbDirectConnection : IAsyncDisposable
                 MaximumReceiveSize = Math.Min(options.MaximumReceiveSize, endpoint.MaximumReceiveSize),
                 MaximumReceiveCredits = Math.Min(options.MaximumReceiveCredits, endpoint.MaximumReceiveQueueDepth)
             };
-            var posted = await endpoint.PostReceivesAsync(options.MaximumReceiveCredits, options.MaximumReceiveSize, cancellationToken).ConfigureAwait(false);
-            if (posted <= 0 || posted > options.MaximumReceiveCredits) throw new SmbProtocolException("The RDMA provider did not post valid negotiation receives.");
+            int posted = await endpoint.PostReceivesAsync(options.MaximumReceiveCredits, options.MaximumReceiveSize, cancellationToken).ConfigureAwait(false);
+            if (posted <= 0 || posted > options.MaximumReceiveCredits)
+                throw new SmbProtocolException("The RDMA provider did not post valid negotiation receives.");
             await endpoint.SendAsync(SmbDirectWire.NegotiateRequest(options), cancellationToken: cancellationToken).ConfigureAwait(false);
             SmbDirectNegotiation peer;
-            using (var response = await endpoint.ReceiveAsync(cancellationToken).ConfigureAwait(false))
+            using (SmbRdmaReceive response = await endpoint.ReceiveAsync(cancellationToken).ConfigureAwait(false))
                 peer = SmbDirectWire.NegotiateResponse(response.Data.Span, options);
             posted--;
-            var desired = Math.Min(peer.CreditsRequested, options.MaximumReceiveCredits);
-            var additional = await endpoint.PostReceivesAsync(Math.Max(0, desired - posted), options.MaximumReceiveSize, cancellationToken).ConfigureAwait(false);
-            if (additional < 0 || additional > Math.Max(0, desired - posted)) throw new SmbProtocolException("The RDMA provider overposted negotiation receives.");
+            ushort desired = Math.Min(peer.CreditsRequested, options.MaximumReceiveCredits);
+            int additional = await endpoint.PostReceivesAsync(Math.Max(0, desired - posted), options.MaximumReceiveSize, cancellationToken).ConfigureAwait(false);
+            if (additional < 0 || additional > Math.Max(0, desired - posted))
+                throw new SmbProtocolException("The RDMA provider overposted negotiation receives.");
             posted += additional;
-            if (posted == 0) throw new SmbProtocolException("No RDMA receive remains after negotiation.");
+            if (posted == 0)
+                throw new SmbProtocolException("No RDMA receive remains after negotiation.");
             connection = new SmbDirectConnection(endpoint, options, peer, posted);
             // 发起方必须先公布已投递接收，再发送普通上层流量。
             await connection.SendFragmentAsync(ReadOnlyMemory<byte>.Empty, 0, null, false, cancellationToken).ConfigureAwait(false);
@@ -173,8 +203,13 @@ public sealed class SmbDirectConnection : IAsyncDisposable
         }
         catch
         {
-            if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
-            else { endpoint.Abort(); await endpoint.DisposeAsync().ConfigureAwait(false); }
+            if (connection is not null)
+                await connection.DisposeAsync().ConfigureAwait(false);
+            else
+            {
+                endpoint.Abort();
+                await endpoint.DisposeAsync().ConfigureAwait(false);
+            }
             throw;
         }
     }
@@ -183,10 +218,11 @@ public sealed class SmbDirectConnection : IAsyncDisposable
     public async ValueTask SendAsync(ReadOnlyMemory<byte> message, uint? invalidateRemoteToken = null, CancellationToken cancellationToken = default)
     {
         ThrowIfClosed();
-        if (message.Length > MaximumFragmentedSendSize) throw new ArgumentOutOfRangeException(nameof(message));
+        if (message.Length > MaximumFragmentedSendSize)
+            throw new ArgumentOutOfRangeException(nameof(message));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
         await messageWriter.WaitAsync(linked.Token).ConfigureAwait(false);
-        var sent = false;
+        bool sent = false;
         try
         {
             if (message.IsEmpty)
@@ -194,21 +230,26 @@ public sealed class SmbDirectConnection : IAsyncDisposable
                 await SendFragmentAsync(message, 0, invalidateRemoteToken, false, linked.Token).ConfigureAwait(false);
                 return;
             }
-            var offset = 0;
+            int offset = 0;
             while (offset < message.Length)
             {
-                var count = Math.Min(MaximumSendSize - SmbDirectWire.PayloadOffset, message.Length - offset);
+                int count = Math.Min(MaximumSendSize - SmbDirectWire.PayloadOffset, message.Length - offset);
                 await SendFragmentAsync(message.Slice(offset, count), (uint)(message.Length - offset - count),
                     offset + count == message.Length ? invalidateRemoteToken : null, false, linked.Token).ConfigureAwait(false);
-                sent = true; offset += count;
+                sent = true;
+                offset += count;
             }
         }
         catch (Exception ex)
         {
-            if (sent) Abort(ex);
+            if (sent)
+                Abort(ex);
             throw;
         }
-        finally { messageWriter.Release(); }
+        finally
+        {
+            _ = messageWriter.Release();
+        }
     }
 
     /// <summary>接收一条完整消息或失效事件，不向上层暴露原生接收缓冲区租约。</summary>
@@ -217,7 +258,10 @@ public sealed class SmbDirectConnection : IAsyncDisposable
     public async ValueTask<SmbDirectMessage> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfClosed();
-        try { return await messages.Reader.ReadAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            return await messages.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        }
         catch (ChannelClosedException)
         {
             ThrowIfClosed();
@@ -230,21 +274,27 @@ public sealed class SmbDirectConnection : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ThrowIfClosed();
-        if (buffer.IsEmpty) throw new ArgumentException("A registered buffer cannot be empty.", nameof(buffer));
+        if (buffer.IsEmpty)
+            throw new ArgumentException("A registered buffer cannot be empty.", nameof(buffer));
         if (access == 0 || (access & ~(SmbRdmaMemoryAccess.RemoteRead | SmbRdmaMemoryAccess.RemoteWrite)) != 0)
             throw new ArgumentOutOfRangeException(nameof(access));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        var registration = await endpoint.RegisterMemoryAsync(buffer, access, linked.Token).ConfigureAwait(false);
-        if (registration is null) throw new SmbProtocolException("The RDMA provider returned no memory registration.");
+        SmbRdmaMemoryRegistration? registration = await endpoint.RegisterMemoryAsync(buffer, access, linked.Token).ConfigureAwait(false);
+        if (registration is null)
+            throw new SmbProtocolException("The RDMA provider returned no memory registration.");
         try
         {
-            var descriptors = registration.Descriptors.ToArray();
+            SmbRdmaBufferDescriptor[] descriptors = registration.Descriptors.ToArray();
             _ = SmbRdmaBufferDescriptor.Encode(descriptors);
-            if (descriptors.Sum(descriptor => (long)descriptor.Length) != buffer.Length)
-                throw new SmbProtocolException("An RDMA registration does not cover the complete buffer.");
-            return new Registration(registration, descriptors);
+            return descriptors.Sum(descriptor => descriptor.Length) != buffer.Length
+                ? throw new SmbProtocolException("An RDMA registration does not cover the complete buffer.")
+                : (SmbRdmaMemoryRegistration)new Registration(registration, descriptors);
         }
-        catch { await registration.DisposeAsync().ConfigureAwait(false); throw; }
+        catch
+        {
+            await registration.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>读取远程逻辑缓冲区范围，在描述符和协商长度边界处分段。</summary>
@@ -257,21 +307,31 @@ public sealed class SmbDirectConnection : IAsyncDisposable
     {
         ThrowIfClosed();
         cancellationToken.ThrowIfCancellationRequested();
-        if (!destination.IsEmpty && MaximumReadWriteSize == 0) throw new NotSupportedException("The peer did not negotiate RDMA direct placement.");
-        var selected = SmbRdmaBufferDescriptor.Slice(descriptors, remoteOffset, destination.Length);
+        if (!destination.IsEmpty && MaximumReadWriteSize == 0)
+            throw new NotSupportedException("The peer did not negotiate RDMA direct placement.");
+        IReadOnlyList<SmbRdmaBufferDescriptor> selected = SmbRdmaBufferDescriptor.Slice(descriptors, remoteOffset, destination.Length);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        var position = 0;
+        int position = 0;
         try
         {
-            foreach (var descriptor in selected)
+            foreach (SmbRdmaBufferDescriptor descriptor in selected)
                 for (uint offset = 0; offset < descriptor.Length;)
                 {
-                    var count = (int)Math.Min((uint)MaximumReadWriteSize, descriptor.Length - offset);
-                    await endpoint.ReadAsync(destination.Slice(position, count), descriptor with { Offset = descriptor.Offset + offset, Length = (uint)count }, linked.Token).ConfigureAwait(false);
-                    position += count; offset += (uint)count;
+                    int count = (int)Math.Min((uint)MaximumReadWriteSize, descriptor.Length - offset);
+                    await endpoint.ReadAsync(destination.Slice(position, count), descriptor with
+                    {
+                        Offset = descriptor.Offset + offset,
+                        Length = (uint)count
+                    }, linked.Token).ConfigureAwait(false);
+                    position += count;
+                    offset += (uint)count;
                 }
         }
-        catch (Exception ex) { Abort(ex); throw; }
+        catch (Exception ex)
+        {
+            Abort(ex);
+            throw;
+        }
     }
 
     /// <summary>写入远程逻辑缓冲区范围，在描述符和协商长度边界处分段。</summary>
@@ -284,21 +344,31 @@ public sealed class SmbDirectConnection : IAsyncDisposable
     {
         ThrowIfClosed();
         cancellationToken.ThrowIfCancellationRequested();
-        if (!source.IsEmpty && MaximumReadWriteSize == 0) throw new NotSupportedException("The peer did not negotiate RDMA direct placement.");
-        var selected = SmbRdmaBufferDescriptor.Slice(descriptors, remoteOffset, source.Length);
+        if (!source.IsEmpty && MaximumReadWriteSize == 0)
+            throw new NotSupportedException("The peer did not negotiate RDMA direct placement.");
+        IReadOnlyList<SmbRdmaBufferDescriptor> selected = SmbRdmaBufferDescriptor.Slice(descriptors, remoteOffset, source.Length);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetime.Token);
-        var position = 0;
+        int position = 0;
         try
         {
-            foreach (var descriptor in selected)
+            foreach (SmbRdmaBufferDescriptor descriptor in selected)
                 for (uint offset = 0; offset < descriptor.Length;)
                 {
-                    var count = (int)Math.Min((uint)MaximumReadWriteSize, descriptor.Length - offset);
-                    await endpoint.WriteAsync(source.Slice(position, count), descriptor with { Offset = descriptor.Offset + offset, Length = (uint)count }, linked.Token).ConfigureAwait(false);
-                    position += count; offset += (uint)count;
+                    int count = (int)Math.Min((uint)MaximumReadWriteSize, descriptor.Length - offset);
+                    await endpoint.WriteAsync(source.Slice(position, count), descriptor with
+                    {
+                        Offset = descriptor.Offset + offset,
+                        Length = (uint)count
+                    }, linked.Token).ConfigureAwait(false);
+                    position += count;
+                    offset += (uint)count;
                 }
         }
-        catch (Exception ex) { Abort(ex); throw; }
+        catch (Exception ex)
+        {
+            Abort(ex);
+            throw;
+        }
     }
 
     /// <summary>先投递设备接收，再允许公布对应信用。</summary>
@@ -312,16 +382,26 @@ public sealed class SmbDirectConnection : IAsyncDisposable
             int count;
             lock (stateGate)
             {
-                var target = Math.Min(peerCreditTarget, options.MaximumReceiveCredits);
-                if (force && target <= receiveCredits) target = Math.Min(options.MaximumReceiveCredits, receiveCredits + 1);
+                int target = Math.Min(peerCreditTarget, options.MaximumReceiveCredits);
+                if (force && target <= receiveCredits)
+                    target = Math.Min(options.MaximumReceiveCredits, receiveCredits + 1);
                 count = Math.Max(0, target - postedReceives);
             }
-            if (count == 0) return;
-            var added = await endpoint.PostReceivesAsync(count, MaximumReceiveSize, cancellationToken).ConfigureAwait(false);
-            if (added < 0 || added > count) throw new SmbProtocolException("The RDMA provider returned an invalid posted receive count.");
-            lock (stateGate) { postedReceives += added; WakeSenders(); }
+            if (count == 0)
+                return;
+            int added = await endpoint.PostReceivesAsync(count, MaximumReceiveSize, cancellationToken).ConfigureAwait(false);
+            if (added < 0 || added > count)
+                throw new SmbProtocolException("The RDMA provider returned an invalid posted receive count.");
+            lock (stateGate)
+            {
+                postedReceives += added;
+                WakeSenders();
+            }
         }
-        finally { posting.Release(); }
+        finally
+        {
+            _ = posting.Release();
+        }
     }
 
     /// <summary>先保留信用再获取发送锁，避免信用回复与接收互相等待。</summary>
@@ -334,7 +414,8 @@ public sealed class SmbDirectConnection : IAsyncDisposable
         {
             ThrowIfClosed();
             bool force;
-            lock (stateGate) force = sendCredits <= 1;
+            lock (stateGate)
+                force = sendCredits <= 1;
             await ReplenishAsync(force, cancellationToken).ConfigureAwait(false);
             Task wait;
             lock (stateGate)
@@ -342,7 +423,8 @@ public sealed class SmbDirectConnection : IAsyncDisposable
                 grant = (ushort)Math.Min(ushort.MaxValue - receiveCredits, postedReceives - receiveCredits);
                 if (sendCredits > 1 || (sendCredits == 1 && grant > 0))
                 {
-                    sendCredits--; receiveCredits += grant;
+                    sendCredits--;
+                    receiveCredits += grant;
                     break;
                 }
                 wait = creditChanged.Task;
@@ -354,13 +436,21 @@ public sealed class SmbDirectConnection : IAsyncDisposable
             await wireWriter.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (responseRequested) Interlocked.Exchange(ref probeStarted, Environment.TickCount64);
+                if (responseRequested)
+                    _ = Interlocked.Exchange(ref probeStarted, Environment.TickCount64);
                 await endpoint.SendAsync(SmbDirectWire.Data(payload.Span, remaining, options.SendCreditTarget, grant, responseRequested),
                     invalidate, cancellationToken).ConfigureAwait(false);
             }
-            finally { wireWriter.Release(); }
+            finally
+            {
+                _ = wireWriter.Release();
+            }
         }
-        catch (Exception ex) { Abort(ex); throw; }
+        catch (Exception ex)
+        {
+            Abort(ex);
+            throw;
+        }
     }
 
     /// <summary>校验帧和信用，保持分片顺序，并合并控制响应。</summary>
@@ -373,25 +463,31 @@ public sealed class SmbDirectConnection : IAsyncDisposable
         {
             while (!lifetime.IsCancellationRequested)
             {
-                using var received = await endpoint.ReceiveAsync(lifetime.Token).ConfigureAwait(false);
-                var data = SmbDirectWire.ParseData(received.Data, MaximumReceiveSize, MaximumFragmentedReceiveSize);
-                var hadProbe = Interlocked.Exchange(ref probeStarted, 0) != 0;
-                Interlocked.Exchange(ref lastReceive, Environment.TickCount64);
+                using SmbRdmaReceive received = await endpoint.ReceiveAsync(lifetime.Token).ConfigureAwait(false);
+                SmbDirectData data = SmbDirectWire.ParseData(received.Data, MaximumReceiveSize, MaximumFragmentedReceiveSize);
+                bool hadProbe = Interlocked.Exchange(ref probeStarted, 0) != 0;
+                _ = Interlocked.Exchange(ref lastReceive, Environment.TickCount64);
                 lock (stateGate)
                 {
-                    if (receiveCredits <= 0 || postedReceives <= 0) throw new SmbProtocolException("The peer exceeded granted SMB Direct receive credits.");
-                    receiveCredits--; postedReceives--;
-                    if (sendCredits > ushort.MaxValue - data.CreditsGranted) throw new SmbProtocolException("SMB Direct credits overflowed.");
-                    sendCredits += data.CreditsGranted; peerCreditTarget = data.CreditsRequested;
+                    if (receiveCredits <= 0 || postedReceives <= 0)
+                        throw new SmbProtocolException("The peer exceeded granted SMB Direct receive credits.");
+                    receiveCredits--;
+                    postedReceives--;
+                    if (sendCredits > ushort.MaxValue - data.CreditsGranted)
+                        throw new SmbProtocolException("SMB Direct credits overflowed.");
+                    sendCredits += data.CreditsGranted;
+                    peerCreditTarget = data.CreditsRequested;
                     WakeSenders();
                 }
                 await ReplenishAsync(false, lifetime.Token).ConfigureAwait(false);
-                if (data.ResponseRequested && !hadProbe) RequestControl();
+                if (data.ResponseRequested && !hadProbe)
+                    RequestControl();
                 // 批量授予可选信用，避免对空信用消息无限相互响应。
                 lock (stateGate)
                     if (!data.Payload.IsEmpty && receiveCredits <= Math.Max(1, Math.Min(peerCreditTarget, options.MaximumReceiveCredits) / 2) && postedReceives > receiveCredits)
                         RequestControl();
-                if (received.InvalidatedToken is { } token) invalidated = token;
+                if (received.InvalidatedToken is { } token)
+                    invalidated = token;
                 if (data.Payload.IsEmpty)
                 {
                     if (received.InvalidatedToken is not null && assembly.Length == 0)
@@ -404,7 +500,7 @@ public sealed class SmbDirectConnection : IAsyncDisposable
                 if (assembly.Length == 0)
                 {
                     expectedRemaining = data.RemainingLength;
-                    if ((long)data.Payload.Length + expectedRemaining > MaximumFragmentedReceiveSize)
+                    if (data.Payload.Length + expectedRemaining > MaximumFragmentedReceiveSize)
                         throw new SmbProtocolException("An SMB Direct fragmented message is oversized.");
                 }
                 else
@@ -414,23 +510,30 @@ public sealed class SmbDirectConnection : IAsyncDisposable
                     expectedRemaining = data.RemainingLength;
                 }
                 assembly.Write(data.Payload.Span);
-                if (assembly.Length > MaximumFragmentedReceiveSize) throw new SmbProtocolException("An SMB Direct message exceeded its reassembly limit.");
+                if (assembly.Length > MaximumFragmentedReceiveSize)
+                    throw new SmbProtocolException("An SMB Direct message exceeded its reassembly limit.");
                 if (data.RemainingLength == 0)
                 {
                     await messages.Writer.WriteAsync(new(assembly.ToArray(), invalidated), lifetime.Token).ConfigureAwait(false);
-                    assembly.SetLength(0); assembly.Position = 0; invalidated = null;
+                    assembly.SetLength(0);
+                    assembly.Position = 0;
+                    invalidated = null;
                 }
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { Abort(ex); }
+        catch (Exception ex)
+        {
+            Abort(ex);
+        }
     }
 
     /// <summary>排队信用或保活响应，避免接收消费者因等待发送信用而阻塞。</summary>
     private void RequestControl()
     {
         Volatile.Write(ref controlRequested, 1);
-        if (Interlocked.CompareExchange(ref controlRunning, 1, 0) == 0) controlTask = SendControlLoopAsync();
+        if (Interlocked.CompareExchange(ref controlRunning, 1, 0) == 0)
+            controlTask = SendControlLoopAsync();
     }
 
     /// <summary>发送合并后的空控制帧，同时允许接收循环继续收集信用。</summary>
@@ -442,62 +545,90 @@ public sealed class SmbDirectConnection : IAsyncDisposable
                 await SendFragmentAsync(ReadOnlyMemory<byte>.Empty, 0, null, false, lifetime.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { Abort(ex); }
+        catch (Exception ex)
+        {
+            Abort(ex);
+        }
         finally
         {
             Volatile.Write(ref controlRunning, 0);
-            if (Volatile.Read(ref controlRequested) != 0 && !lifetime.IsCancellationRequested) RequestControl();
+            if (Volatile.Read(ref controlRequested) != 0 && !lifetime.IsCancellationRequested)
+                RequestControl();
         }
     }
 
     /// <summary>探测空闲对端，只有实际发出的探测超时后才中止连接。</summary>
     private async Task KeepaliveLoopAsync()
     {
-        if (options.KeepaliveInterval == Timeout.InfiniteTimeSpan) return;
+        if (options.KeepaliveInterval == Timeout.InfiniteTimeSpan)
+            return;
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(Math.Max(1, Math.Min(options.KeepaliveInterval.TotalMilliseconds, options.KeepaliveTimeout.TotalMilliseconds))));
         try
         {
             while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
             {
-                var now = Environment.TickCount64;
-                var probe = Volatile.Read(ref probeStarted);
+                long now = Environment.TickCount64;
+                long probe = Volatile.Read(ref probeStarted);
                 if (probe != 0)
                 {
-                    if (now - probe >= options.KeepaliveTimeout.TotalMilliseconds) throw new TimeoutException("The SMB Direct peer did not answer a keepalive.");
+                    if (now - probe >= options.KeepaliveTimeout.TotalMilliseconds)
+                        throw new TimeoutException("The SMB Direct peer did not answer a keepalive.");
                 }
                 else if (now - Volatile.Read(ref lastReceive) >= options.KeepaliveInterval.TotalMilliseconds)
                     await SendFragmentAsync(ReadOnlyMemory<byte>.Empty, 0, null, true, lifetime.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { Abort(ex); }
+        catch (Exception ex)
+        {
+            Abort(ex);
+        }
     }
 
     /// <summary>创建可安全异步调度延续任务的资源变化信号。</summary>
-    private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static TaskCompletionSource Signal()
+    {
+        return new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
     /// <summary>持有 stateGate 时替换信号，并唤醒全部等待发送。</summary>
-    private void WakeSenders() { var signal = creditChanged; creditChanged = Signal(); signal.TrySetResult(); }
+    private void WakeSenders()
+    {
+        TaskCompletionSource signal = creditChanged;
+        creditChanged = Signal();
+        _ = signal.TrySetResult();
+    }
     /// <summary>拒绝后续操作时保留连接的原始错误。</summary>
     private void ThrowIfClosed()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
-        if (Volatile.Read(ref failure) is { } error) throw new IOException("The SMB Direct connection is closed.", error);
+        if (Volatile.Read(ref failure) is { } error)
+            throw new IOException("The SMB Direct connection is closed.", error);
     }
 
     /// <summary>终止原生流量、唤醒等待方，并保留内存直到提供程序清理完成访问栅栏。</summary>
-    public void Abort() => Abort(new IOException("The SMB Direct connection was aborted."));
+    public void Abort()
+    {
+        Abort(new IOException("The SMB Direct connection was aborted."));
+    }
+
     /// <summary>记录首次失败，并终止未完成的传输工作。</summary>
     private void Abort(Exception error)
     {
-        if (Interlocked.CompareExchange(ref failure, error, null) is not null) return;
-        lifetime.Cancel(); endpoint.Abort(); messages.Writer.TryComplete(error);
-        lock (stateGate) WakeSenders();
+        if (Interlocked.CompareExchange(ref failure, error, null) is not null)
+            return;
+        lifetime.Cancel();
+        endpoint.Abort();
+        _ = messages.Writer.TryComplete(error);
+        lock (stateGate)
+            WakeSenders();
     }
 
     /// <summary>先停止后台工作，再异步释放拥有的 RDMA 提供程序端点。</summary>
     public ValueTask DisposeAsync()
     {
-        lock (disposeGate) return new(disposal ??= DisposeCoreAsync());
+        lock (disposeGate)
+            return new(disposal ??= DisposeCoreAsync());
     }
 
     /// <summary>执行唯一的停止及清理流程；并发释放方通过共享任务等待设备访问完全结束。</summary>
@@ -521,6 +652,9 @@ public sealed class SmbDirectConnection : IAsyncDisposable
         /// <summary>经过校验的不可变远程访问片段列表。</summary>
         public override IReadOnlyList<SmbRdmaBufferDescriptor> Descriptors => snapshot;
         /// <summary>恰好释放一次提供程序注册对象，以完成远程访问栅栏。</summary>
-        public override ValueTask DisposeAsync() => Interlocked.Exchange(ref registration, null)?.DisposeAsync() ?? ValueTask.CompletedTask;
+        public override ValueTask DisposeAsync()
+        {
+            return Interlocked.Exchange(ref registration, null)?.DisposeAsync() ?? ValueTask.CompletedTask;
+        }
     }
 }

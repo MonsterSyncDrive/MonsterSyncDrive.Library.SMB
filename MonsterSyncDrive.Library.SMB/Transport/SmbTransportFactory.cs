@@ -24,7 +24,7 @@
 using System.Net;
 using System.Net.Sockets;
 
-namespace MonsterSyncDrive.SMB.Transport;
+namespace MonsterSyncDrive.Library.SMB.Transport;
 
 /// <summary>在统一的连接截止时间内建立所选 SMB 传输。</summary>
 internal static class SmbTransportFactory
@@ -42,11 +42,14 @@ internal static class SmbTransportFactory
         TimeSpan connectTimeout, CancellationToken cancellationToken)
     {
         options = options.Validate(host);
-        if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
-        if (maximumPacketSize is < 64 or > 0xFFFFFF) throw new ArgumentOutOfRangeException(nameof(maximumPacketSize));
-        using var timeout = new CancellationTokenSource();
-        if (connectTimeout != Timeout.InfiniteTimeSpan) timeout.CancelAfter(connectTimeout);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        if (port is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(port));
+        if (maximumPacketSize is < 64 or > 0xFFFFFF)
+            throw new ArgumentOutOfRangeException(nameof(maximumPacketSize));
+        using CancellationTokenSource timeout = new();
+        if (connectTimeout != Timeout.InfiniteTimeSpan)
+            timeout.CancelAfter(connectTimeout);
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         try
         {
             return options.Kind switch
@@ -59,7 +62,9 @@ internal static class SmbTransportFactory
             };
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        { throw new TimeoutException("The SMB transport connection timed out."); }
+        {
+            throw new TimeoutException("The SMB transport connection timed out.");
+        }
     }
 
     /// <summary>将已连接 TCP 套接字的所有权转移至带分帧和生命周期管理的消息传输对象。</summary>
@@ -67,9 +72,15 @@ internal static class SmbTransportFactory
     /// <param name="kind">Direct TCP，或已经建立的 NetBIOS 会话。</param>
     /// <param name="maximum">配置的消息大小上限。</param>
     /// <returns>封装后的消息传输对象。</returns>
-    private static ISmbMessageTransport WrapTcp(TcpClient tcp, SmbTransportKind kind, int maximum) =>
-        new SmbStreamMessageTransport(tcp.GetStream(), kind, maximum, tcp.Client.LocalEndPoint, tcp.Client.RemoteEndPoint,
-            () => SmbSocketTrafficClass.Dispose(tcp), () => { SmbSocketTrafficClass.Dispose(tcp); return ValueTask.CompletedTask; });
+    private static ISmbMessageTransport WrapTcp(TcpClient tcp, SmbTransportKind kind, int maximum)
+    {
+        return new SmbStreamMessageTransport(tcp.GetStream(), kind, maximum, tcp.Client.LocalEndPoint, tcp.Client.RemoteEndPoint,
+            () => SmbSocketTrafficClass.Dispose(tcp), () =>
+            {
+                SmbSocketTrafficClass.Dispose(tcp);
+                return ValueTask.CompletedTask;
+            });
+    }
 
     /// <summary>仅跟随调用方明确允许、未超出次数限制且未形成循环的 RFC 1002 会话重定向。</summary>
     /// <param name="host">原始逻辑主机名称，在重定向过程中保持不变。</param>
@@ -80,24 +91,33 @@ internal static class SmbTransportFactory
     /// <returns>收到会话成功响应后建立的带分帧传输对象。</returns>
     private static async Task<ISmbMessageTransport> ConnectNetBiosAsync(string host, int port, SmbTransportOptions options, int maximum, CancellationToken cancellationToken)
     {
-        var visited = new HashSet<IPEndPoint>();
-        for (var count = 0; ; count++)
+        HashSet<IPEndPoint> visited = [];
+        for (int count = 0; ; count++)
         {
             var tcp = await SmbEndpointConnector.ConnectTcpAsync(host, port, options, cancellationToken).ConfigureAwait(false);
             try
             {
-                if (tcp.Client.RemoteEndPoint is IPEndPoint remote && !visited.Add(remote)) throw new SmbProtocolException("NetBIOS session retarget loop.");
+                if (tcp.Client.RemoteEndPoint is IPEndPoint remote && !visited.Add(remote))
+                    throw new SmbProtocolException("NetBIOS session retarget loop.");
                 var target = await NetBiosSession.RequestAsync(tcp.GetStream(), options.NetBios, cancellationToken).ConfigureAwait(false);
-                if (target is null) return WrapTcp(tcp, SmbTransportKind.NetBios, maximum);
+                if (target is null)
+                    return WrapTcp(tcp, SmbTransportKind.NetBios, maximum);
                 // 重定向只提供新的网络端点，不会改变 SMB 或 TLS 身份。
                 // 连接服务器提供的端点之前，先执行调用方策略。
                 if (!options.NetBios.AllowRetarget || count >= options.NetBios.MaximumRetargets || options.NetBios.RetargetPolicy?.Invoke(target) == false)
                     throw new SmbProtocolException("The NetBIOS retarget was disallowed or exceeded its limit.");
                 SmbSocketTrafficClass.Dispose(tcp);
-                options = options with { RemoteAddress = target.Address };
+                options = options with
+                {
+                    RemoteAddress = target.Address
+                };
                 port = target.Port;
             }
-            catch { SmbSocketTrafficClass.Dispose(tcp); throw; }
+            catch
+            {
+                SmbSocketTrafficClass.Dispose(tcp);
+                throw;
+            }
         }
     }
 
@@ -110,17 +130,24 @@ internal static class SmbTransportFactory
     /// <returns>RDMA 消息传输对象。</returns>
     private static async Task<ISmbMessageTransport> ConnectRdmaAsync(string host, int port, SmbTransportOptions options, int maximum, CancellationToken cancellationToken)
     {
-        if (options.Dscp is not null) throw new PlatformNotSupportedException("RDMA fabric traffic class must be configured by the selected RDMA provider.");
+        if (options.Dscp is not null)
+            throw new PlatformNotSupportedException("RDMA fabric traffic class must be configured by the selected RDMA provider.");
         var endpointOptions = options;
         if (options.LocalAddress is null && options.LocalPort == 0 && options.Rdma.LocalEndPoint is { } source)
-            endpointOptions = options with { LocalAddress = source.Address };
+            endpointOptions = options with
+            {
+                LocalAddress = source.Address
+            };
         var addresses = await SmbEndpointConnector.ResolveAsync(host, endpointOptions, cancellationToken).ConfigureAwait(false);
-        var errors = new List<Exception>();
+        List<Exception> errors = [];
         foreach (var address in addresses)
         {
             var rdma = options.Rdma;
             if (options.LocalAddress is not null || options.LocalPort != 0)
-                rdma = rdma with { LocalEndPoint = new IPEndPoint(options.LocalAddress ?? (address.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any), options.LocalPort) };
+                rdma = rdma with
+                {
+                    LocalEndPoint = new IPEndPoint(options.LocalAddress ?? (address.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any), options.LocalPort)
+                };
             try
             {
                 // 连接管理器的尝试采用顺序执行，因为提供程序可能占用固定的
@@ -128,10 +155,17 @@ internal static class SmbTransportFactory
                 // 而客户端独立保留的 Host 始终代表 SMB 身份。
                 return await SmbDirectTransport.ConnectAsync(address.ToString(), port, rdma, maximum, cancellationToken).ConfigureAwait(false);
             }
-            catch (IOException error) when (error is not SmbProtocolException) { errors.Add(error); }
-            catch (SocketException error) { errors.Add(error); }
+            catch (IOException error) when (error is not SmbProtocolException)
+            {
+                errors.Add(error);
+            }
+            catch (SocketException error)
+            {
+                errors.Add(error);
+            }
         }
-        if (errors.Count == 1) throw errors[0];
+        if (errors.Count == 1)
+            throw errors[0];
         throw new IOException("No resolved SMB RDMA endpoint could be reached.", new AggregateException(errors));
     }
 }

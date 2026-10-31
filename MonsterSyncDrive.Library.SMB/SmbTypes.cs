@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-namespace MonsterSyncDrive.SMB;
+namespace MonsterSyncDrive.Library.SMB;
 
 
 /// <summary>CREATE 请求所使用的 Windows 文件访问掩码；由服务端依据安全描述符和身份授权。</summary>
@@ -166,7 +166,10 @@ public sealed record SmbOpenOptions
     /// <summary>申请的传统 oplock 级别；默认 None，服务器可以授予较低级别。</summary>
     public SmbOplockLevel RequestedOplockLevel { get; init; } = SmbOplockLevel.None;
     /// <summary>处理撤销时先刷新或作废应用缓存，再返回希望确认的 oplock 降级级别。</summary>
-    public Func<SmbOplockBreak, CancellationToken, ValueTask<SmbOplockLevel>>? OplockBreakHandler { get; init; }
+    public Func<SmbOplockBreak, CancellationToken, ValueTask<SmbOplockLevel>>? OplockBreakHandler
+    {
+        get; init;
+    }
 }
 
 
@@ -486,13 +489,22 @@ public sealed class SmbException : IOException
 {
 
     /// <summary>保留的原始 NTSTATUS，包括未在枚举中命名的状态值。</summary>
-    public SmbStatus Status { get; }
+    public SmbStatus Status
+    {
+        get;
+    }
 
     /// <summary>导致错误的 SMB2 命令号。</summary>
-    public ushort Command { get; }
+    public ushort Command
+    {
+        get;
+    }
 
     /// <summary>服务端错误载荷的独立副本，供上层解析扩展错误。</summary>
-    public ReadOnlyMemory<byte> ErrorData { get; }
+    public ReadOnlyMemory<byte> ErrorData
+    {
+        get;
+    }
 
     /// <summary>仅识别明确的名称或路径不存在状态，不将拒绝访问误报为不存在。</summary>
     public bool IsNotFound => Status is SmbStatus.NoSuchFile or SmbStatus.ObjectNameNotFound or SmbStatus.ObjectPathNotFound;
@@ -527,10 +539,16 @@ public sealed class SmbRpcException : IOException
 {
 
     /// <summary>RPC 或服务方法返回的原始数值状态。</summary>
-    public uint Status { get; }
+    public uint Status
+    {
+        get;
+    }
 
     /// <summary>是否来自 RPC fault 报文，而非普通服务结果。</summary>
-    public bool IsFault { get; }
+    public bool IsFault
+    {
+        get;
+    }
 
     /// <summary>保存 RPC 状态及 fault 分类，诊断文本不包含凭据。</summary>
     internal SmbRpcException(uint status, bool isFault) : base($"SMB srvsvc RPC failed with status 0x{status:X8}.")
